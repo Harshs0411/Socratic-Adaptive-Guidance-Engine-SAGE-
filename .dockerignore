@@ -1,0 +1,13 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+.git
+.gitignore
+.DS_Store
+.system_generated
+scratch
+venv
+.venv
+chroma_db

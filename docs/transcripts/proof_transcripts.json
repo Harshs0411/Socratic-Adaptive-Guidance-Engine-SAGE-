@@ -1,0 +1,129 @@
+{
+  "Proof_1_Beginner": [
+    {
+      "turn": 0,
+      "role": "assistant",
+      "content": "\ud83d\udc4b Welcome to SAGE! I'm your interactive tutor, and I'm excited to explore **Binary Search** with you.\n\nTo make sure our lessons are tailored to your pace, how would you describe your current experience with this topic?\n\n1. **Beginner**: Completely new (we'll start from scratch with step-by-step explanations, real-world analogies, and worked examples)\n2. **Some knowledge**: I know the basics, but want to strengthen my intuition and problem-solving\n3. **Comfortable**: Confident with core ideas, ready for tricky variants and deep algorithmic analysis\n\n*(You can click a button or just reply naturally!)*"
+    },
+    {
+      "turn": 1,
+      "role": "user",
+      "content": "I am a beginner"
+    },
+    {
+      "turn": 1,
+      "role": "assistant",
+      "content": "Awesome! Welcome aboard to **Binary Search** as a Beginner! \ud83d\ude80\n\nWe won't do any tests or diagnostics. We'll start straight away from the foundational concepts, using intuitive analogies, clear step-by-step explanations, and real-world worked examples.\n\nFeel free to ask any doubt at any point\u2014there are no silly questions here!\n\n---\n\n## \ud83d\udcda Sorted Array Preconditions & Search Space (Part 1/4: Intuition & Core Problem)\n\nUnderstanding why monotonicity and sorted order are mandatory for binary elimination.\n\n### Intuitive Mental Model\n\ud83d\udca1 **Analogy:** Looking up a word in a printed physical dictionary: you flip directly to the middle because alphabetical order guarantees which half contains the word.\n\n---\n\ud83d\udcac Any questions on this, or click **Continue** when you're ready to proceed!"
+    }
+  ],
+  "Proof_2_SomeKnowledge_Diagnostic": [
+    {
+      "turn": 0,
+      "role": "assistant",
+      "content": "\ud83d\udc4b Welcome to SAGE! I'm your interactive tutor, and I'm excited to explore **Binary Search** with you.\n\nTo make sure our lessons are tailored to your pace, how would you describe your current experience with this topic?\n\n1. **Beginner**: Completely new (we'll start from scratch with step-by-step explanations, real-world analogies, and worked examples)\n2. **Some knowledge**: I know the basics, but want to strengthen my intuition and problem-solving\n3. **Comfortable**: Confident with core ideas, ready for tricky variants and deep algorithmic analysis\n\n*(You can click a button or just reply naturally!)*"
+    },
+    {
+      "turn": 1,
+      "role": "user",
+      "content": "I know some"
+    },
+    {
+      "turn": 1,
+      "role": "assistant",
+      "content": "Diagnostic question 1 of 12\n\nWhy does Binary Search require the input array to be sorted?"
+    },
+    {
+      "turn": 2,
+      "role": "user",
+      "content": "I don't know"
+    },
+    {
+      "turn": 2,
+      "role": "assistant",
+      "content": "No worries at all! Here's a small hint to point you in the right direction:\n\n\ud83d\udca1 It's completely normal to feel uncertain about concepts like binary search, so don't worry! Let's break it down together.\n\nWith that hint in mind, let's give the question another shot:\n\n**Question:** Why does Binary Search require the input array to be sorted?"
+    },
+    {
+      "turn": 3,
+      "role": "user",
+      "content": "Wait, why does the array need to be sorted first?"
+    },
+    {
+      "turn": 3,
+      "role": "assistant",
+      "content": "That's a great question! Understanding why the input array must be sorted for binary search is key to grasping how this algorithm works.\n\nBinary search operates by repeatedly dividing the search interval in half. It begins by comparing the target value (the value you're searching for) to the middle element of the array. If the target is equal to the middle element, you've found it! If the target is less than the middle element, you can eliminate the right half of the array from consideration, and if it's greater, you can eliminate the left half.\n\nNow, this elimination process relies on the array being sorted. If the array is not sorted, you cannot confidently decide which half to discard. For example, imagine you have the following unsorted array: [3, 1, 4, 2]. If you look at the middle element (which could be 4), and your target is 2, you wouldn't know whether to search left or right because the elements aren't in a predictable order. \n\nIn contrast, if the array is sorted, say [1, 2, 3, 4], and you check the middle element (which is 3), you can clearly see that since your target (2) is less than 3, you can safely ignore everything to the right of 3. This is the essence of binary search: it relies on the order of elements to efficiently narrow down the search space.\n\nThis principle is well-documented in authoritative texts like \"Introduction to Algorithms\" by Cormen et al. and \"Data Structures and Algorithms Made Easy\" by Narasimha Karumanchi, which emphasize that the efficiency of binary search hinges on the sorted nature of the input array.\n\nSo, in summary, the requirement for a sorted array is what allows binary search to effectively halve the search space and find the target value quickly.\n\nDoes that make sense, or should I explain it another way?"
+    },
+    {
+      "turn": 4,
+      "role": "user",
+      "content": "makes sense"
+    },
+    {
+      "turn": 4,
+      "role": "assistant",
+      "content": "Awesome, glad that's clear! Let's get right back to where we were:\n\n**Question:** Why does Binary Search require the input array to be sorted?"
+    }
+  ],
+  "Proof_4_Mode1_QA": [
+    {
+      "turn": 1,
+      "role": "user",
+      "content": "The left half is discarded, so low becomes mid + 1."
+    },
+    {
+      "turn": 1,
+      "role": "assistant",
+      "content": "Here is a challenge problem on Binary Search Fundamentals (Transfer Problem):\n\n**Question:** Can Binary Search be used to find an element in a rotated sorted array like [4, 5, 6, 7, 0, 1, 2]? Briefly explain why or why not."
+    }
+  ],
+  "Proof_5_Doubt_Invariants": [
+    {
+      "turn": 1,
+      "role": "user",
+      "content": "Wait, why do we use integer division '// 2' here?"
+    },
+    {
+      "turn": 1,
+      "role": "assistant",
+      "content": "Great question! The use of integer division (often represented as `//` in programming languages like Python) in the context of binary search is crucial for determining the middle index of a given range.\n\nWhen you're performing a binary search, you start with two pointers: `low` and `high`. These pointers represent the current segment of the array you're examining. To find the middle index, you want to calculate the average of `low` and `high`. However, since you're dealing with indices, you need to ensure that the result is also an integer.\n\nHere's why we use integer division:\n\n1. **Indices Must Be Whole Numbers**: Array indices are whole numbers (0, 1, 2, etc.). If you were to use regular division (like `/`), you could end up with a non-integer result. For example, if `low` is 0 and `high` is 10, the average would be `5.0` using regular division, but you need the index to be `5`, not `5.0`.\n\n2. **Avoiding Floating Point Issues**: Using integer division ensures that you're working with exact integer values, which is especially important in programming where floating-point arithmetic can lead to precision errors. \n\n3. **Correct Middle Calculation**: In the binary search algorithm, the middle index is calculated as `mid = (low + high) // 2`. This effectively gives you the floor value of the average, which is what you want when determining the index to check in the array.\n\nSo, if `low` is 0 and `high` is 10, the calculation would be:\n\n```python\nmid = (0 + 10) // 2  # This results in 5\n```\n\nThis means you will check the element at index 5 in your array. \n\nUsing integer division is a simple yet effective way to ensure that you always get a valid index while performing the binary search, allowing the algorithm to function correctly and efficiently. Keep up the great work in understanding these concepts!\n\nDoes that make sense, or should I explain it another way?"
+    },
+    {
+      "turn": 2,
+      "role": "user",
+      "content": "makes sense"
+    },
+    {
+      "turn": 2,
+      "role": "assistant",
+      "content": "Awesome, glad that's clear! Let's get right back to where we were:\n\n**Question:** What is the index of mid if low is 0 and high is 10?"
+    },
+    {
+      "turn": 3,
+      "role": "user",
+      "content": "5"
+    },
+    {
+      "turn": 3,
+      "role": "assistant",
+      "content": "**Verdict:** Correct! \ud83c\udfaf\nSpot-on reasoning\u2014you accurately demonstrated the core concept.\n\nLet's test this with our next check problem (Recall Check):\n\n**Question:** Why does Binary Search require the input array to be sorted?"
+    }
+  ],
+  "Proof_6_Diagram_Request": [
+    {
+      "turn": 1,
+      "role": "user",
+      "content": "show me a diagram"
+    },
+    {
+      "turn": 1,
+      "role": "assistant",
+      "content": "Here is a helpful visual diagram for **Binary Search Algorithm Flowchart**:\n\n```mermaid\nflowchart TD\n    A([\"Start: Low=0, High=n-1\"]) --> B{\"Low <= High?\"}\n    B -- Yes --> C[\"Mid = Low + (High-Low)/2\"]\n    C --> D{\"Arr[Mid] == Target?\"}\n    D -- Yes --> E([\"Return Mid: Found\"])\n    D -- No --> F{\"Arr[Mid] < Target?\"}\n    F -- Yes --> G[\"Low = Mid + 1\"]\n    F -- No --> H[\"High = Mid - 1\"]\n    G --> B\n    H --> B\n    B -- No --> I([\"Return -1: Not Found\"])\n```\n\n*Standard Binary Search decision flow showing the 3-way branch at each step.*\n\nDoes seeing this diagram help you picture the idea more clearly?"
+    }
+  ],
+  "Proof_8_Returning_Student": [
+    {
+      "turn": 0,
+      "role": "assistant",
+      "content": "\ud83d\udc4b Welcome back! Last time we finished work on **Binary Search Fundamentals** and reached 85% mastery. Ready to pick up right where we left off, or would you like a 2-minute refresher?"
+    }
+  ]
+}

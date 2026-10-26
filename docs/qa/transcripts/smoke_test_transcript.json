@@ -1,0 +1,23 @@
+{
+  "test_1_beginner": {
+    "initial_message": "Awesome! Welcome aboard to Binary Search & Invariants as a Beginner! \ud83d\ude80\n\nWe won't do any tests or diagnostics. We'll start straight away from the foundational concepts, using intuitive analogies, clear step-by-step explanations, and real-world worked examples.\n\nFeel free to ask any doubt at any point\u2014there are no silly questions here!\n\n\ud83d\udcda Lesson: Sorted Array Preconditions & Search Space\nIntuitive M...",
+    "has_analogy": true,
+    "has_example": true,
+    "screenshot": "smoke_beginner_lesson.png"
+  },
+  "test_2_diagnostic_and_doubts": {
+    "q1": "Diagnostic question 1 of 12\n\nWhy does Binary Search require the input array to be sorted?",
+    "hint_reply": "No worries at all! Here's a small hint to point you in the right direction:\n\n\ud83d\udca1 Absolutely, it's completely normal to feel unsure sometimes! Let's break down why binary search requires the input array ",
+    "adv_reply": "No problem at all, that tells me exactly where to begin! We'll make sure to explore that from the ground up.\n\nLet's move to our next diagnostic question:\n\nDiagnostic question 2 of 12\n\nWhat is the wors",
+    "doubt_reply": "That's a great question! The requirement for the array to be sorted is fundamental to how binary search works. Let me explain this with a simple analogy.\n\nImagine you're looking for a specific book in",
+    "resume_reply": "Awesome, glad that's clear! Let's get right back to where we were:\n\nQuestion: What is the worst-case time complexity of Binary Search on an array of length N?",
+    "messages_after_reload": 12
+  },
+  "test_3_custom_topic": {
+    "topic": "Guardrails in LLM Systems",
+    "lesson_preview": "Awesome! Welcome aboard to Guardrails in LLM Systems as a Beginner! \ud83d\ude80\n\nWe won't do any tests or diagnostics. We'll start straight away from the foundational concepts, using intuitive analogies, clear step-by-step explanations, and real-world worked examples.\n\nFeel free to ask any doubt at any point\u2014there are no silly questions here!\n\n\ud83d\udcda Lesson: foundational_concepts\nIntuitive Mental Model\n\n\ud83d\udca1 Analog...",
+    "length": 706,
+    "contamination_free": true,
+    "screenshot": "smoke_custom_topic_guardrails.png"
+  }
+}

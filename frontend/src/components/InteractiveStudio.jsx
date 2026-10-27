@@ -1,6 +1,8 @@
 import React, { useState } from "react";
 import { Play, Sparkles, X, Terminal, Code, BookOpen, AlertTriangle, CheckCircle } from "lucide-react";
 
+const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000/api";
+
 export default function InteractiveStudio({ activeConcept, onSendToChat, onClose }) {
   const [language, setLanguage] = useState("cpp"); // "cpp", "python", "notes"
   const [code, setCode] = useState(`// C++20 Interactive Studio
@@ -63,7 +65,7 @@ $$E = mc^2$$
     setOutput(null);
 
     try {
-      const res = await fetch("http://localhost:8000/api/code/run", {
+      const res = await fetch(`${API_BASE}/code/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

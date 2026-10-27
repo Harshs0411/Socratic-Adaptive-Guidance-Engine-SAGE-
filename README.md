@@ -264,6 +264,20 @@ npm run dev
 # SAGE UI will be live at http://localhost:5173
 ```
 
+### ☁️ Cloud Deployment (Vercel + Render)
+
+| Component | Platform | Root Directory | Build Command | Start / Output |
+| :--- | :--- | :--- | :--- | :--- |
+| **Frontend** | [Vercel](https://vercel.com) | `frontend` | `npm run build` | `dist` |
+| **Backend** | [Render](https://render.com) | Repository root (`.`) | `pip install -r requirements.txt` | `uvicorn multi_agent_tutor.api.server:app --host 0.0.0.0 --port $PORT` |
+
+* **Render Environment Variables:**
+  * `PYTHON_VERSION`: `3.11.9`
+  * `OPENAI_API_KEY`: `sk-...`
+  * `DATABASE_URL` (Optional): Cloud PostgreSQL URL (e.g. Neon, Supabase, or Render Postgres). Falls back to SQLite if omitted.
+* **Vercel Environment Variables:**
+  * `VITE_API_BASE`: `https://<your-render-backend-name>.onrender.com/api`
+
 ### Running Tests
 ```bash
 # Run the complete test suite (40+ unit and integration tests)

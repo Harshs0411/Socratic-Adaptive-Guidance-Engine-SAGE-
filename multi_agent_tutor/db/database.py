@@ -73,24 +73,46 @@ async def get_or_create_engine() -> AsyncEngine:
                 pool_pre_ping=True,
                 echo=False,
             )
+            from sqlalchemy import text
             # Test connection
             async with pg_engine.connect() as conn:
-                await conn.execute(Base.metadata.tables["learning_sessions"].select().limit(1) if "learning_sessions" in Base.metadata.tables else "SELECT 1")
+                await conn.execute(text("SELECT 1"))
             
             _engine = pg_engine
             _active_dialect = "postgresql"
             _db_connected = True
             logger.info("✅ Connected to PostgreSQL database successfully.")
         except Exception as e:
-            logger.warning(
-                f"⚠️ PostgreSQL connection to '{target_url}' failed ({e}). "
-                f"Seamlessly falling back to local persistent SQLite at {SQLITE_PATH}."
-            )
-            fallback_url = f"sqlite+aiosqlite:///{SQLITE_PATH}"
-            _engine = create_async_engine(fallback_url, echo=False)
-            _active_dialect = "sqlite"
-            _db_connected = True
+            _db_connected = False
+            # Check if running in production or explicit PostgreSQL configuration
+            is_prod = bool(os.getenv("RENDER") or os.getenv("ENVIRONMENT") == "production" or os.getenv("DATABASE_URL"))
+            if is_prod:
+                logger.critical(
+                    f"❌ CRITICAL: Failed to connect to production PostgreSQL database at '{target_url}' ({e}). "
+                    "Production will NOT silently fall back to ephemeral SQLite. Application startup aborted."
+                )
+                raise RuntimeError(
+                    f"Failed to connect to production PostgreSQL database: {e}. "
+                    "Production will not fall back to ephemeral SQLite. Please check your Render DATABASE_URL."
+                ) from e
+            else:
+                logger.warning(
+                    f"⚠️ PostgreSQL connection to '{target_url}' failed ({e}). "
+                    f"Falling back to local persistent SQLite at {SQLITE_PATH}."
+                )
+                fallback_url = f"sqlite+aiosqlite:///{SQLITE_PATH}"
+                _engine = create_async_engine(fallback_url, echo=False)
+                _active_dialect = "sqlite"
+                _db_connected = True
     else:
+        # Check if production environment is missing PostgreSQL DATABASE_URL
+        if bool(os.getenv("RENDER") or os.getenv("ENVIRONMENT") == "production"):
+            _db_connected = False
+            logger.critical("❌ CRITICAL: Running in production environment (Render) but DATABASE_URL is not set to PostgreSQL!")
+            raise RuntimeError(
+                "Production environment detected (Render) but DATABASE_URL is not configured for PostgreSQL! "
+                "Please configure DATABASE_URL in your Render service settings."
+            )
         _engine = create_async_engine(target_url, echo=False)
         _active_dialect = "sqlite"
         _db_connected = True
@@ -116,8 +138,9 @@ async def init_db() -> None:
             if "learning_sessions" in inspector.get_table_names():
                 existing_cols = {col["name"] for col in inspector.get_columns("learning_sessions")}
                 json_col_type = "JSONB" if _active_dialect == "postgresql" else "JSON"
+                bool_default = "FALSE" if _active_dialect == "postgresql" else "0"
                 if "assessment_done" not in existing_cols:
-                    sync_conn.execute(text("ALTER TABLE learning_sessions ADD COLUMN assessment_done BOOLEAN DEFAULT 0"))
+                    sync_conn.execute(text(f"ALTER TABLE learning_sessions ADD COLUMN assessment_done BOOLEAN DEFAULT {bool_default}"))
                 if "self_reported_level" not in existing_cols:
                     sync_conn.execute(text("ALTER TABLE learning_sessions ADD COLUMN self_reported_level VARCHAR(32)"))
                 if "teaching_mode" not in existing_cols:
@@ -168,8 +191,9 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
 
 def get_db_status() -> Dict[str, Any]:
     """Return live database connectivity metrics for health checks."""
+    is_prod = bool(os.getenv("RENDER") or os.getenv("ENVIRONMENT") == "production" or _active_dialect == "postgresql")
     return {
         "connected": _db_connected,
         "dialect": _active_dialect,
-        "mode": "production (PostgreSQL)" if _active_dialect == "postgresql" else "local (SQLite fallback)",
+        "mode": "production" if is_prod else "development",
     }

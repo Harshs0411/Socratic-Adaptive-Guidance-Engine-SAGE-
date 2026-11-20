@@ -10,7 +10,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 # Persistence directory for Chroma
-RAG_DATA_DIR = os.path.abspath(
+RAG_DATA_DIR = os.getenv("CHROMA_PERSIST_DIRECTORY") or os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "data", "chroma_db")
 )
 os.makedirs(RAG_DATA_DIR, exist_ok=True)

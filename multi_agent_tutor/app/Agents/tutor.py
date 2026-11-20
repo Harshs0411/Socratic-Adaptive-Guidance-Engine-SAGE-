@@ -1,3 +1,4 @@
+import time
 from dotenv import load_dotenv, find_dotenv
 
 from langchain_openai import ChatOpenAI
@@ -17,8 +18,20 @@ load_dotenv(find_dotenv())
 
 model = ChatOpenAI(
     model="gpt-4o-mini",
-    temperature=0.3,
+    temperature=0.2,
+    max_tokens=450,
+    streaming=True,
 )
+
+
+def _emit_stream(stream_queue, text: str):
+    """Emit tokens or text chunks into the streaming queue if active."""
+    if stream_queue is None or not text:
+        return
+    import re
+    tokens = re.findall(r"\S+\s*|\s+", text)
+    for tok in tokens:
+        stream_queue.put_nowait(tok)
 
 
 socratic_llm = model.with_structured_output(
@@ -80,254 +93,47 @@ CORE RULES
    - For recursion and algorithm concepts, always use computationally sound mental models: call stack frames with activation records, task delegation with return handoffs, or directory/tree traversals.
    - If the Critic has rejected a previous response for inappropriate analogies or phrasing, you MUST strictly adhere to the Critic's instructions and eliminate all rejected elements.
 
-==================================================
-QUESTION TYPES
-==================================================
+10. TEACHING-BEFORE-TESTING & SCOPE INVARIANTS:
+    - Assessment questions must be strictly based on concepts, definitions, and mechanics that you (SAGE) have ALREADY explained to the student in this conversation or the immediate lesson.
+    - NEVER generate questions based on upcoming lessons, planned curriculum, or concepts you intend to teach later. A planned lesson is NOT completed teaching.
+    - Merely mentioning a term does NOT mean it has been taught. Never test a student on unexplained terms or concepts.
+    - FOR COMPARISON OR TRANSFER QUESTIONS: Ensure that ALL essential concepts being compared or transferred have already been explained in the conversation. If any required concept is missing, you MUST teach that concept briefly with a simple example first before asking the question.
+    - Natural learning sequence: Teach -> Ask questions about what was taught -> Evaluate understanding -> Adapt next teaching step. Never let assessment get ahead of teaching.
 
-conceptual:
-The student explains an idea, intuition,
-relationship, or mechanism.
+11. ANSWER ACKNOWLEDGMENT & EXPLANATION INVARIANT:
+    - When the student answers a question, you MUST ALWAYS begin your response message by explicitly acknowledging it.
+    - Briefly explain WHY their answer is correct, partially correct, or what makes their reasoning sound. Never jump to another question without this acknowledgment and explanation.
+    - If the answer was partially correct or incomplete, validate what was sound and clarify the missing detail.
 
-objective:
-The answer has a deterministically verifiable result.
+12. CONVERSATIONAL CONTINUITY & TOPICAL COHESION:
+    - Maintain unbroken continuity between consecutive questions.
+    - Explicitly connect your next question to the concept and answer just discussed.
+    - Avoid suddenly jumping to unrelated topics or distant technological advancements without a clear pedagogical bridge.
 
-application:
-The student applies the concept to a new situation.
-
-==================================================
-EVALUATOR TYPES
-==================================================
-
-llm:
-Use for conceptual reasoning where semantic
-understanding must be evaluated.
-
-numeric:
-Use when the answer is one numerical value.
-
-Example:
-
-Question:
-What is y[1] for x=[1,2,3] and h=[4,5]?
-
-Expected answer:
-13
-
-Evaluator:
-numeric
-
---------------------------------------------------
-
-sequence:
-Use when the answer is an ordered sequence,
-vector, or list.
-
-Example:
-
-Question:
-What is the convolution of [1,2] and [3,4]?
-
-Expected answer:
-[3,10,8]
-
-Evaluator:
-sequence
-
---------------------------------------------------
-
-set:
-Use when the answer is an unordered collection
-of values.
-
-Example:
-
-Question:
-Which k values contribute?
-
-Expected answer:
-{{0,1}}
-
-Evaluator:
-set
-
---------------------------------------------------
-
-symbolic:
-Use for mathematical expressions where exact
-symbolic structure matters.
-
-Example:
-
-Question:
-What is the valid range of n for the convolution
-of signals of lengths M and N?
-
-Expected answer:
-0 <= n <= M+N-2
-
-Evaluator:
-symbolic
-
---------------------------------------------------
-
-exact:
-Use for short exact answers such as a named
-concept, term, or definition keyword.
+13. GRADUAL CONCEPT INTRODUCTION & TEACHING CONTEXT:
+    - Ensure every question has sufficient context and a clear scenario.
+    - If introducing a new concept, subtopic, or dimension, ALWAYS provide a short 1-2 sentence explanation or intuitive definition FIRST before asking about it.
+    - Increase difficulty gradually: start with direct intuition and recall, advance to mechanics and application, and only probe transfer or edge cases once foundational mechanics are demonstrated.
 
 ==================================================
-EVALUATION ARCHITECTURE
+QUESTION & EVALUATOR TYPES
 ==================================================
 
-All student answers are evaluated by the intelligent LLM Assessment Agent.
-Choose evaluator_type to indicate the expected primary format of the answer:
-- llm: for conceptual reasoning, intuitions, or explanations
-- numeric: when the primary answer is a number (workings/derivations allowed)
-- sequence: when the primary answer is an ordered list or array
-- set: when the primary answer is an unordered set of values
-- symbolic: when the primary answer is an algebraic equation or relation
-- exact: when the answer is a concise technical name or keyword
+Question types:
+- conceptual: student explains an idea, mechanism, intuition, or relationship
+- objective: verifiable numerical, symbolic, sequence, set, or exact value
+- application: student applies concept to a specific scenario
 
-For example:
+Evaluator types:
+- llm: conceptual reasoning, intuitions, and semantic understanding
+- numeric: single numerical value (expected_answer: exact number, e.g. "13")
+- sequence: ordered list/vector (expected_answer: exact list, e.g. "[3, 10, 8]")
+- set: unordered collection (expected_answer: exact set, e.g. "{{0, 1}}")
+- symbolic: algebraic expression or relation (expected_answer: exact formula, e.g. "0 <= n <= M+N-2")
+- exact: concise technical term or keyword
 
-Question:
-"What is y[1]?"
-
-Answer:
-13
-
-Evaluator:
-numeric
-
---------------------------------------------------
-
-Question:
-"What is the convolution of [1,2] and [3,4]?"
-
-Answer:
-[3,10,8]
-
-Evaluator:
-sequence
-
---------------------------------------------------
-
-Question:
-"Which k values contribute?"
-
-Answer:
-{{0,1}}
-
-Evaluator:
-set
-
---------------------------------------------------
-
-Question:
-"What is the index of x used when evaluating
-x[-n] at n=-3?"
-
-Answer:
-3
-
-Evaluator:
-numeric
-
---------------------------------------------------
-
-Question:
-"Why does convolution reverse one signal?"
-
-Answer:
-An explanation.
-
-Evaluator:
-llm
-
-==================================================
-EXPECTED ANSWER ALIGNMENT
-==================================================
-
-This is extremely important.
-
-The expected_answer must correspond to the
-question exactly.
-
-BAD:
-
-Question:
-"What index of x is used when evaluating
-x[-n] at n=-3?"
-
-Expected:
-"x[-n] has value 2 at n=-3 and value 5 at n=1."
-
-WHY BAD:
-The expected answer contains information about
-two samples even though the question asks for
-only one index.
-
-GOOD:
-
-Question:
-"What index of x is used when evaluating
-x[-n] at n=-3?"
-
-Expected:
-"3"
-
-Evaluator:
-numeric
-
---------------------------------------------------
-
-BAD:
-
-Question:
-"What is the maximum convolution index?"
-
-Expected:
-"The convolution length is M+N-1."
-
-WHY BAD:
-The question asks for an index, not the length.
-
-GOOD:
-
-Question:
-"What is the maximum convolution index?"
-
-Expected:
-"M+N-2"
-
-Evaluator:
-symbolic
-
---------------------------------------------------
-
-BAD:
-
-Question:
-"What does time reversal do?"
-
-Expected:
-"x[3] becomes x[-3], x[-1] becomes x[1],
-and the sequence is reflected around zero."
-
-WHY BAD:
-This contains more information than necessary and
-is not a clean answer target.
-
-GOOD:
-
-Question:
-"What happens to a sample at index n when a signal
-is time-reversed?"
-
-Expected:
-"It moves from index n to index -n."
-
-Evaluator:
-llm or exact depending on wording.
+Expected Answer Alignment Invariant:
+The expected_answer must directly answer ONLY the exact question asked. Never include answers to unasked questions, multiple indices, or entire concept summaries.
 
 ==================================================
 TEACHING ACTIONS
@@ -424,6 +230,12 @@ Pedagogical Depth Guidelines:
 - deep: Challenge the student from first principles. Probe boundary conditions, mathematical formulations, edge cases, invariants, and theoretical/system trade-offs. Ask the student to explain why a formula, mechanism, or algorithm behaves the way it does under extreme or unexpected inputs.
 
 ==================================================
+PREVIOUS TUTOR EXPLANATIONS IN THIS CONVERSATION
+==================================================
+
+{conversation_history}
+
+==================================================
 AUTHORITATIVE REFERENCE CONTEXT (RAG)
 ==================================================
 
@@ -447,80 +259,11 @@ Do not unnecessarily return to the entire concept.
 Do not repeat a previous question unless the
 purpose is explicit verification.
 
-==================================================
-ADDITIONAL QUESTION DESIGN RULES
-==================================================
-
 For hint and scaffold actions:
-
-1. Reduce the cognitive difficulty.
+1. Reduce cognitive difficulty.
 2. Ask only one small question.
-3. Make the expected answer correspond exactly
-   to that small question.
-4. Prefer deterministic evaluators when the answer
-   is objectively verifiable.
-
-For example:
-
-Question:
-"What index of x is used when evaluating
-x[-n] at n=-3?"
-
-Expected answer:
-"3"
-
-Evaluator:
-numeric
-
-Do NOT make the expected answer a complete
-explanation of time reversal.
-
---------------------------------------------------
-
-For conceptual questions:
-
-The expected_answer should describe the essential
-idea that demonstrates correctness.
-
-The evaluation_criteria should specify the key
-reasoning elements.
-
---------------------------------------------------
-
-For numerical questions:
-
-Use evaluator_type="numeric".
-
-The expected_answer should contain exactly one
-numerical result.
-
---------------------------------------------------
-
-For sequence questions:
-
-Use evaluator_type="sequence".
-
-The expected_answer should contain the complete
-ordered sequence.
-
---------------------------------------------------
-
-For set questions:
-
-Use evaluator_type="set".
-
-The expected_answer should contain only the required
-set of values.
-
---------------------------------------------------
-
-For symbolic questions:
-
-Use evaluator_type="symbolic".
-
-The expected_answer should contain the exact
-mathematical expression or relation required by
-the question.
+3. Make expected_answer correspond strictly to that small question.
+4. Prefer deterministic evaluators (numeric, sequence, set, exact) when the answer is objectively verifiable.
 
 ==================================================
 FINAL SELF-CHECK
@@ -576,6 +319,7 @@ def sage_agent(state: TutorState):
     """
     Generate the next structured Socratic response.
     """
+    t0 = time.perf_counter()
 
     concept = state["current_concept"]
 
@@ -588,6 +332,7 @@ def sage_agent(state: TutorState):
         concept,
         0.0,
     )
+    stream_queue = state.get("_stream_queue")
 
     teaching = state.get("teaching") or {
         "current_action": "initial",
@@ -636,24 +381,48 @@ def sage_agent(state: TutorState):
         if assessment is not None:
             ass_score = getattr(assessment, "score", 0.0) if not isinstance(assessment, dict) else assessment.get("score", 0.0)
             ass_misconceptions = getattr(assessment, "misconceptions", []) if not isinstance(assessment, dict) else assessment.get("misconceptions", [])
+            ass_feedback = getattr(assessment, "feedback", None) if not isinstance(assessment, dict) else assessment.get("feedback", None)
             is_copied = "copied_from_tutor" in ass_misconceptions
 
             if is_copied:
                 feedback_prefix = "⚠️ That matches what I just explained. Try putting it in your own words, or here is a slightly different question:\n\n"
             elif ass_score >= 0.70:
                 feedback_prefix = "**Verdict:** Correct! 🎯\n"
-                if ass_misconceptions:
+                if ass_feedback:
+                    feedback_prefix += f"{ass_feedback}\n\n"
+                elif ass_misconceptions:
                     feedback_prefix += f"You've captured the core principle well. (Keep in mind: {ass_misconceptions[0]}).\n\n"
                 else:
-                    feedback_prefix += f"Spot-on reasoning—you accurately demonstrated the core concept.\n\n"
+                    prev_exp = prev_pq.get("expected_answer", "") if isinstance(prev_pq, dict) else (getattr(prev_pq, "expected_answer", "") if prev_pq else "")
+                    if prev_exp:
+                        feedback_prefix += f"Spot-on reasoning—{prev_exp}.\n\n"
+                    else:
+                        feedback_prefix += f"Spot-on reasoning—you accurately demonstrated the core concept.\n\n"
             elif ass_score >= 0.40:
                 feedback_prefix = "**Verdict:** Partly right. 💡\n"
-                gap = ass_misconceptions[0] if ass_misconceptions else "the exact boundary condition or state transition"
-                feedback_prefix += f"You have part of the intuition, but be sure to account for {gap}.\n\n"
+                if ass_feedback:
+                    feedback_prefix += f"{ass_feedback}\n\n"
+                else:
+                    gap = ass_misconceptions[0] if ass_misconceptions else "the exact boundary condition or state transition"
+                    feedback_prefix += f"You have part of the intuition, but be sure to account for {gap}.\n\n"
             else:
                 feedback_prefix = "**Verdict:** Not quite yet. 🔄\n"
-                gap = ass_misconceptions[0] if ass_misconceptions else "the governing invariant"
-                feedback_prefix += f"Not quite—the key distinction to keep in mind is {gap}.\n\n"
+                if ass_feedback:
+                    feedback_prefix += f"{ass_feedback}\n\n"
+                else:
+                    gap = ass_misconceptions[0] if ass_misconceptions else "the governing invariant"
+                    feedback_prefix += f"Not quite—the key distinction to keep in mind is {gap}.\n\n"
+
+        # Check for milestone advancement from previous concept
+        just_advanced_from = teaching.get("just_advanced_from")
+        advancement_banner = ""
+        if just_advanced_from and just_advanced_from != concept:
+            adv_prev_title = just_advanced_from.replace("_", " ").title()
+            adv_curr_title = concept.replace("_", " ").title()
+            advancement_banner = (
+                f"🌟 **Mastery Achieved:** Excellent job mastering **{adv_prev_title}**!\n\n"
+                f"Now, building directly on the concepts you just learned, let's explore our next milestone: **{adv_curr_title}**.\n\n"
+            )
 
         is_prereq_offer = (action == "prerequisite_offer" or teaching.get("current_action") == "prerequisite_offer")
         if is_prereq_offer:
@@ -668,6 +437,7 @@ def sage_agent(state: TutorState):
                 evaluation_criteria=["Student indicates preference."],
                 question_type="conceptual",
             )
+            _emit_stream(stream_queue, full_re_msg)
             return {
                 "socratic_response": socratic_resp,
                 "tutor_response": full_re_msg,
@@ -719,6 +489,7 @@ def sage_agent(state: TutorState):
                 evaluation_criteria=out_pq.get("evaluation_criteria", []) if out_pq else [],
                 question_type="conceptual",
             )
+            _emit_stream(stream_queue, full_re_msg)
             return {
                 "socratic_response": socratic_resp,
                 "tutor_response": full_re_msg,
@@ -764,6 +535,7 @@ def sage_agent(state: TutorState):
                         evaluation_criteria=["Student continues."],
                         question_type="conceptual",
                     )
+                    _emit_stream(stream_queue, step_content)
                     return {
                         "socratic_response": socratic_resp,
                         "tutor_response": step_content,
@@ -771,6 +543,7 @@ def sage_agent(state: TutorState):
                         "awaiting": "continue",
                         "teaching_step_index": next_step,
                         "teaching_step": "teach",
+                        "_is_vetted": True,
                         "teaching": {
                             **teaching,
                             "current_action": "explain",
@@ -800,6 +573,7 @@ def sage_agent(state: TutorState):
                             evaluation_criteria=cq.get("evaluation_criteria", []),
                             question_type=cq.get("question_type", "conceptual"),
                         )
+                        _emit_stream(stream_queue, msg)
                         return {
                             "socratic_response": socratic_resp,
                             "tutor_response": msg,
@@ -809,6 +583,7 @@ def sage_agent(state: TutorState):
                             "asked_question_texts": asked_texts,
                             "teaching_step_index": 4,
                             "teaching_step": "check",
+                            "_is_vetted": True,
                             "teaching": {
                                 **teaching,
                                 "current_action": "probe",
@@ -830,7 +605,9 @@ def sage_agent(state: TutorState):
                     asked_ids.append(cq["question_id"])
                     asked_texts.append(cq["question"])
                     tier_name = "Recall Check" if cq.get("difficulty_tier") == 1 else ("Application Check" if cq.get("difficulty_tier") == 2 else "Transfer Problem")
-                    msg = f"{feedback_prefix}Let's test this with our next check problem ({tier_name}):\n\n**Question:** {cq['question']}"
+                    c_title = concept.replace("_", " ").title()
+                    lead_in = f"Building on your explanation, let's explore our next check problem on **{c_title}** ({tier_name}):\n\n"
+                    msg = f"{feedback_prefix}{lead_in}**Question:** {cq['question']}"
                     socratic_resp = SocraticResponse(
                         message=msg,
                         question=cq["question"],
@@ -840,6 +617,7 @@ def sage_agent(state: TutorState):
                         evaluation_criteria=cq.get("evaluation_criteria", []),
                         question_type=cq.get("question_type", "conceptual"),
                     )
+                    _emit_stream(stream_queue, msg)
                     return {
                         "socratic_response": socratic_resp,
                         "tutor_response": msg,
@@ -849,6 +627,7 @@ def sage_agent(state: TutorState):
                         "asked_question_texts": asked_texts,
                         "teaching_step_index": 4,
                         "teaching_step": "check",
+                        "_is_vetted": True,
                         "teaching": {
                             **teaching,
                             "current_action": "probe",
@@ -877,7 +656,7 @@ def sage_agent(state: TutorState):
                     signals["diagnostic_summary_shown"] = True
 
                 explanation = generate_mode_2_explanation(topic, concept)
-                full_explanation = prefix + explanation
+                full_explanation = f"{feedback_prefix}{advancement_banner}{prefix}{explanation}"
 
                 socratic_resp = SocraticResponse(
                     message=full_explanation,
@@ -888,6 +667,7 @@ def sage_agent(state: TutorState):
                     evaluation_criteria=[],
                     question_type="conceptual",
                 )
+                _emit_stream(stream_queue, full_explanation)
                 return {
                     "socratic_response": socratic_resp,
                     "tutor_response": full_explanation,
@@ -897,6 +677,7 @@ def sage_agent(state: TutorState):
                     "teaching_step": "teach",
                     "assessment_done": True,
                     "signals": signals,
+                    "_is_vetted": True,
                     "teaching": {
                         **teaching,
                         "current_action": "explain",
@@ -905,12 +686,20 @@ def sage_agent(state: TutorState):
                 }
 
         if teaching_mode == "mode_1_qa" and action in ("initial", "probe"):
-            from multi_agent_tutor.app.Agents.teaching_agent import select_check_question
+            from multi_agent_tutor.app.Agents.teaching_agent import select_check_question, get_subtopic_pedagogical_data
             mode1_check_idx = max(1, teaching.get("correct_checks", 0) + 1)
             cq = select_check_question(topic, concept, correct_checks=mode1_check_idx)
             if cq:
                 tier_name = "Application Challenge" if cq.get("difficulty_tier") == 2 else "Transfer Problem"
-                msg = f"Here is a challenge problem on {concept.replace('_', ' ').title()} ({tier_name}):\n\n**Question:** {cq['question']}"
+                c_title = concept.replace("_", " ").title()
+                intro_context = ""
+                if just_advanced_from and just_advanced_from != concept:
+                    sub_data = get_subtopic_pedagogical_data(topic, concept)
+                    desc = (sub_data.get("description") or f"Core principles and mechanisms of {c_title}.") if sub_data else f"Core principles and mechanisms of {c_title}."
+                    intro_context = f"{advancement_banner}### Introduction: {c_title}\n{desc}\n\n"
+
+                lead_in = f"Building on what you've demonstrated, here is our next challenge problem on **{c_title}** ({tier_name}):\n\n"
+                msg = f"{feedback_prefix}{intro_context}{lead_in}**Question:** {cq['question']}"
                 socratic_resp = SocraticResponse(
                     message=msg,
                     question=cq["question"],
@@ -920,12 +709,14 @@ def sage_agent(state: TutorState):
                     evaluation_criteria=cq.get("evaluation_criteria", []),
                     question_type=cq.get("question_type", "conceptual"),
                 )
+                _emit_stream(stream_queue, msg)
                 return {
                     "socratic_response": socratic_resp,
                     "tutor_response": msg,
                     "pending_question": cq,
                     "awaiting": "answer",
                     "teaching_step": "check",
+                    "_is_vetted": True,
                     "teaching": {
                         **teaching,
                         "current_action": "probe",
@@ -966,8 +757,18 @@ def sage_agent(state: TutorState):
         concept=concept,
         current_action=action,
         k=2,
+        student_input=state.get("student_input"),
+        state=state,
     )
-    rag_knowledge = rag_data.get("context_text") or "No reference passages retrieved."
+    rag_knowledge = rag_data.get("context_text") or "No external reference documents uploaded. Rely on core foundational principles."
+
+    # Extract previous tutor explanations so SAGE generates questions only from what was taught
+    messages = state.get("messages") or []
+    tutor_explanations = [
+        m.get("content", "")[:300] for m in messages
+        if m.get("role") in ("assistant", "tutor")
+    ]
+    conversation_history = "\n---\n".join(tutor_explanations[-4:]) if tutor_explanations else "Only the introductory overview has been provided."
 
     # Check if this invocation is a retry due to a rejected Critic evaluation
     crit = state.get("critic_result")
@@ -1013,29 +814,57 @@ def sage_agent(state: TutorState):
 
     pedagogical_signals = "\n".join(signals_directives) if signals_directives else "Standard pedagogical pacing and style."
 
-    result = sage_chain.invoke(
-        {
-            "concept": concept,
-            "mastery": mastery,
-            "action": action,
-            "attempt_count": teaching.get("attempt_count", 0),
-            "misconceptions": misconceptions_str,
-            "objective": objective,
-            "previous_question": previous_question,
-            "student_answer": student_answer,
-            "rag_knowledge": rag_knowledge,
-            "depth_level": state.get("depth_level") or "deep",
-            "critic_feedback": critic_feedback,
-            "pedagogical_signals": pedagogical_signals,
-        }
-    )
+    chain_inputs = {
+        "concept": concept,
+        "mastery": mastery,
+        "action": action,
+        "attempt_count": teaching.get("attempt_count", 0),
+        "misconceptions": misconceptions_str,
+        "objective": objective,
+        "previous_question": previous_question,
+        "student_answer": student_answer,
+        "rag_knowledge": rag_knowledge,
+        "depth_level": state.get("depth_level") or "deep",
+        "critic_feedback": critic_feedback,
+        "pedagogical_signals": pedagogical_signals,
+        "conversation_history": conversation_history,
+    }
+
+    if stream_queue is not None:
+        if feedback_prefix:
+            _emit_stream(stream_queue, feedback_prefix)
+        emitted_len = 0
+        last_chunk = None
+        for chunk in sage_chain.stream(chain_inputs):
+            last_chunk = chunk
+            msg = getattr(chunk, "message", None) or ""
+            if len(msg) > emitted_len:
+                delta = msg[emitted_len:]
+                stream_queue.put_nowait(delta)
+                emitted_len = len(msg)
+        result = last_chunk
+    else:
+        result = sage_chain.invoke(chain_inputs)
+
+    rag_citations = rag_data if (rag_data.get("citations") and len(rag_data["citations"]) > 0) else None
+
+    # Ensure student answer acknowledgment is preserved if not already in LLM message
+    final_message = result.message
+    if feedback_prefix:
+        has_verdict = any(v in final_message.lower() for v in ["verdict:", "spot-on", "correct!", "partly right", "not quite"])
+        if not has_verdict:
+            final_message = f"{feedback_prefix}{final_message}"
+            result.message = final_message
+
+    elapsed = time.perf_counter() - t0
+    print(f"[TIMING] SAGE (Tutor): {elapsed:.3f}s (action={action})")
 
     return {
         "socratic_response": result,
 
-        "tutor_response": result.message,
+        "tutor_response": final_message,
 
-        "rag_context": rag_data,
+        "rag_context": rag_citations,
         "pending_question": {
             "question": result.question,
             "concept_id": concept,

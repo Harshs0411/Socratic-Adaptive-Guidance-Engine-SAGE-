@@ -116,7 +116,7 @@
               "question_id": "bs_f_q3",
               "difficulty_tier": 3,
               "question_type": "application",
-              "question": "Can Binary Search be used to find an element in a rotated sorted array like [4, 5, 6, 7, 0, 1, 2]? Briefly explain why or why not.",
+              "question": "A rotated sorted array (like [4, 5, 6, 7, 0, 1, 2]) is a sorted array shifted around a pivot, meaning at least one half is always strictly sorted. Can Binary Search be adapted to find an element in a rotated sorted array? Briefly explain why or why not.",
               "expected_answer": "Yes, because in any rotated sorted array, at least one of the two halves (left or right of mid) is always normally sorted. We can determine which half is sorted and check if the target falls in that range.",
               "is_transfer": true,
               "evaluation_criteria": [

@@ -1,6 +1,7 @@
 import os
 import re
-from typing import List, Optional
+import time
+from typing import List, Optional, Dict, Tuple
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())
 
@@ -11,6 +12,39 @@ from multi_agent_tutor.app.schemas.curriculum import (
     Curriculum,
     CurriculumConcept,
 )
+
+# In-memory curriculum cache across sessions keyed by (normalized_topic, depth_level)
+_CURRICULUM_CACHE: Dict[Tuple[str, str], List[CurriculumConcept]] = {}
+_CURRICULUM_LLM_CALL_COUNT: int = 0
+
+
+def get_curriculum_llm_call_count() -> int:
+    return _CURRICULUM_LLM_CALL_COUNT
+
+
+def reset_curriculum_llm_call_count() -> None:
+    global _CURRICULUM_LLM_CALL_COUNT
+    _CURRICULUM_LLM_CALL_COUNT = 0
+
+
+def normalize_topic_name(topic: str) -> str:
+    """
+    Normalizes a topic name to prevent duplicate generation caused by
+    capitalization, trailing spaces, or minor punctuation/formatting variations.
+    """
+    if not topic:
+        return "general science"
+    t = topic.strip().lower()
+    t = re.sub(r"[\s_]+", " ", t)
+    return t.strip()
+
+
+def get_curriculum_cache() -> Dict[Tuple[str, str], List[CurriculumConcept]]:
+    return _CURRICULUM_CACHE
+
+
+def clear_curriculum_cache() -> None:
+    _CURRICULUM_CACHE.clear()
 
 
 model = ChatOpenAI(
@@ -160,34 +194,55 @@ def curriculum_agent(state: TutorState) -> dict:
     """
     LangGraph node: Generates the prerequisite curriculum DAG for any target topic.
     Uses pre-authored gold reference curricula (e.g. binary_search_curriculum.json)
-    when available, and falls back to the dynamic Curriculum Architect LLM for custom topics.
+    when available, reuses normalized in-memory cached curricula, and falls back
+    to the dynamic Curriculum Architect LLM only for genuinely unseen topics.
     """
     if state.get("curriculum"):
         return {}
 
-    topic = state.get("target_topic", "").strip() or "General Science"
+    raw_topic = state.get("target_topic", "").strip() or "General Science"
+    norm_topic = normalize_topic_name(raw_topic)
     depth = state.get("depth_level") or "deep"
+    cache_key = (norm_topic, depth)
 
     # 1. Check for pre-authored gold standard curriculum (e.g. Binary Search)
-    static_concepts = load_curriculum_concepts(topic)
+    static_concepts = load_curriculum_concepts(raw_topic) or load_curriculum_concepts(norm_topic)
     if static_concepts:
+        _CURRICULUM_CACHE[cache_key] = [c.model_copy(deep=True) for c in static_concepts]
         return {
             "curriculum": static_concepts,
-            "target_topic": topic,
+            "target_topic": raw_topic,
             "depth_level": depth,
         }
 
-    # 2. Fall back to LLM dynamic generator
+    # 2. Check cached curricula across sessions (normalized topic reuse)
+    if cache_key in _CURRICULUM_CACHE:
+        print(f"[CACHE HIT] Reusing cached curriculum for topic '{norm_topic}' (depth={depth}) — zero LLM tokens used.")
+        cached_concepts = [c.model_copy(deep=True) for c in _CURRICULUM_CACHE[cache_key]]
+        return {
+            "curriculum": cached_concepts,
+            "target_topic": raw_topic,
+            "depth_level": depth,
+        }
+
+    # 3. Fall back to LLM dynamic generator for new, unseen topics
+    t0 = time.perf_counter()
+    global _CURRICULUM_LLM_CALL_COUNT
+    _CURRICULUM_LLM_CALL_COUNT += 1
+
     chain = CURRICULUM_PROMPT | curriculum_llm
     result: Curriculum = chain.invoke({
-        "topic": topic,
+        "topic": raw_topic,
         "depth_level": depth,
     })
 
     validated_concepts = _validate_and_fix_dag(result.concepts)
+    _CURRICULUM_CACHE[cache_key] = [c.model_copy(deep=True) for c in validated_concepts]
+    elapsed = time.perf_counter() - t0
+    print(f"[TIMING] Curriculum Generator LLM: {elapsed:.3f}s for topic '{raw_topic}' (cached for future sessions)")
 
     return {
         "curriculum": validated_concepts,
-        "target_topic": result.topic or topic,
+        "target_topic": result.topic or raw_topic,
         "depth_level": depth,
     }

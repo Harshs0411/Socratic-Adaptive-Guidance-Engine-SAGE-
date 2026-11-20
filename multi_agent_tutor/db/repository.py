@@ -475,3 +475,48 @@ class SessionRepository:
                 }
                 for s in sessions
             ]
+
+    @staticmethod
+    async def find_active_session(student_id: str, norm_topic: str) -> Optional[Dict[str, Any]]:
+        """
+        Finds the active (not graduated) learning session for a student and normalized topic.
+        If multiple exist from legacy runs, selects the one with the most learning progress
+        (highest message count / latest activity).
+        """
+        from multi_agent_tutor.app.Agents.curriculum_generator import normalize_topic_name
+        async with get_db_session() as session:
+            stmt = (
+                select(LearningSessionModel)
+                .options(selectinload(LearningSessionModel.messages))
+                .where(LearningSessionModel.student_id == student_id)
+                .order_by(desc(LearningSessionModel.updated_at))
+            )
+            result = await session.execute(stmt)
+            sessions = result.scalars().all()
+
+            matching = [
+                s for s in sessions
+                if normalize_topic_name(s.topic) == norm_topic and not s.is_graduated
+            ]
+            if not matching:
+                return None
+
+            # Prefer session with messages/progress over empty stubs
+            matching.sort(key=lambda s: (len(s.messages) > 1, len(s.messages), s.updated_at or s.created_at), reverse=True)
+            return await SessionRepository.get_session(matching[0].session_id)
+
+    @staticmethod
+    async def find_curriculum_for_topic(norm_topic: str) -> Optional[List[Dict[str, Any]]]:
+        """Searches database for any previously synthesized curriculum for this normalized topic across all sessions."""
+        from multi_agent_tutor.app.Agents.curriculum_generator import normalize_topic_name
+        async with get_db_session() as session:
+            stmt = (
+                select(LearningSessionModel)
+                .where(LearningSessionModel.curriculum_data.isnot(None))
+                .order_by(desc(LearningSessionModel.updated_at))
+            )
+            result = await session.execute(stmt)
+            for s in result.scalars().all():
+                if normalize_topic_name(s.topic) == norm_topic and s.curriculum_data:
+                    return s.curriculum_data
+        return None

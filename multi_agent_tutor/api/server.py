@@ -2,8 +2,11 @@ import os
 import re
 import sys
 import uuid
+import time
+import json
+import asyncio
 import warnings
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
@@ -16,7 +19,8 @@ from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -45,10 +49,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Enable CORS for React frontend (Vite default: http://localhost:5173)
+# Enable CORS for React frontend (Vercel production & preview, Vite local default: http://localhost:5173)
+cors_env = os.environ.get("CORS_ORIGINS", "")
+allowed_origins = [o.strip() for o in cors_env.split(",") if o.strip()] if cors_env else [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+]
+if "*" in cors_env:
+    allowed_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins if "*" not in allowed_origins else ["*"],
+    allow_origin_regex=r"https://.*\.vercel\.app" if "*" not in allowed_origins else None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -61,11 +76,13 @@ class StartSessionRequest(BaseModel):
     depth_level: Optional[str] = Field(default="deep", description="foundational, applied, or deep")
     self_reported_level: Optional[str] = Field(default=None, description="beginner, some_knowledge, comfortable")
     force_onboarding: Optional[bool] = Field(default=False, description="Explicitly ask level question on start")
+    start_fresh: Optional[bool] = Field(default=False, description="Explicitly start a new session attempt while reusing curriculum")
 
 
 class ChatRequest(BaseModel):
     session_id: str
     message: str = Field(min_length=1)
+    stream: Optional[bool] = Field(default=None, description="Whether to stream response tokens via Server-Sent Events (SSE)")
 
 
 class RunCodeRequest(BaseModel):
@@ -302,283 +319,259 @@ async def health_check():
     }
 
 
+_SESSION_CREATION_LOCKS: Dict[Tuple[str, str], asyncio.Lock] = {}
+
+
+def get_session_lock(student_id: str, norm_topic: str) -> asyncio.Lock:
+    """Returns a deterministic mutex lock for concurrent session creation requests."""
+    key = (student_id, norm_topic)
+    if key not in _SESSION_CREATION_LOCKS:
+        _SESSION_CREATION_LOCKS[key] = asyncio.Lock()
+    return _SESSION_CREATION_LOCKS[key]
+
+
 @app.post("/api/session/start")
 async def start_session(req: StartSessionRequest):
     """
     Zero-Token-Waste Entrypoint:
-    Called ONLY after the user submits their chosen topic.
-    Initializes state, runs curriculum synthesis and initial diagnostic question,
-    then persists the entire session transactionally to PostgreSQL.
+    1. Checks for an existing active session for (student_id, normalized_topic).
+    2. If found and start_fresh is False: resumes that session immediately with 100% state preserved.
+       Zero new database records created, zero duplicate history entries, zero LLM calls.
+    3. If start_fresh is True or no active session exists:
+       Creates a new session, reusing existing curriculum/DAG if available.
+       Calls Curriculum Architect LLM only for genuinely unseen topics.
+    4. Concurrency-safe via student-topic mutex locks.
     """
     topic = req.topic.strip()
-    session_id = str(uuid.uuid4())
     student_id = req.student_id or "student_001"
+    depth = req.depth_level or "deep"
 
-    # Step 1.5: RETURNING STUDENT check
-    prev_sessions = await SessionRepository.list_student_sessions(student_id)
-    matching_prev = [s for s in prev_sessions if s["topic"].lower() == topic.lower()]
+    from multi_agent_tutor.app.Agents.curriculum_generator import normalize_topic_name, get_curriculum_cache
+    from multi_agent_tutor.app.schemas.curriculum import CurriculumConcept
+    norm_topic = normalize_topic_name(topic)
 
-    if matching_prev and not req.self_reported_level and not req.force_onboarding:
-        last_s = await SessionRepository.get_session(matching_prev[0]["session_id"])
-        if last_s and last_s.get("state"):
-            state = dict(last_s["state"])
-            created_str = matching_prev[0].get("updated_at") or matching_prev[0].get("created_at")
-            from datetime import datetime, timezone
-            days_elapsed = 0.0
-            if created_str:
-                try:
-                    last_dt = datetime.fromisoformat(created_str)
-                    now_dt = datetime.now(timezone.utc)
-                    if last_dt.tzinfo is None:
-                        last_dt = last_dt.replace(tzinfo=timezone.utc)
-                    days_elapsed = max(0.0, (now_dt - last_dt).total_seconds() / 86400.0)
-                except Exception:
-                    days_elapsed = 0.0
+    async with get_session_lock(student_id, norm_topic):
+        # 1. Deterministic Resume: Check for existing active session (if not explicitly start_fresh)
+        if not req.start_fresh:
+            existing_session = await SessionRepository.find_active_session(student_id, norm_topic)
+            if existing_session:
+                st = existing_session["state"]
+                curriculum = st.get("curriculum") or []
+                mastery_map = existing_session.get("mastery") or st.get("mastery", {})
+                active_concept = existing_session.get("current_concept") or st.get("current_concept")
+                chat_history = existing_session["chat_history"]
+                is_grad = existing_session.get("is_graduated", False)
+                is_diag = not st.get("diagnostic_state", {}).get("completed", False)
+                phase = "graduated" if is_grad else ("diagnostic" if is_diag else "teaching")
 
-            # Apply forgetting decay only if >= 1 day has passed
-            from multi_agent_tutor.app.utils.bkt import apply_forgetting
-            if days_elapsed >= 1.0:
-                mastery_map = dict(state.get("mastery") or {})
-                for cid, p in mastery_map.items():
-                    mastery_map[cid] = apply_forgetting(p, days_elapsed)
-                state["mastery"] = mastery_map
-                for cid, bkt in (state.get("bkt_states") or {}).items():
-                    if isinstance(bkt, dict):
-                        bkt["p_know"] = mastery_map.get(cid, bkt.get("p_know", 0.20))
-                    elif hasattr(bkt, "p_know"):
-                        bkt.p_know = mastery_map.get(cid, bkt.p_know)
+                # Cache curriculum in memory for instant reuse across sessions
+                if curriculum:
+                    cache_key = (norm_topic, depth)
+                    curr_cache = get_curriculum_cache()
+                    if cache_key not in curr_cache:
+                        curr_cache[cache_key] = [CurriculumConcept(**c) if isinstance(c, dict) else c for c in curriculum]
 
-            curr_c = state.get("current_concept") or "binary_search_fundamentals"
-            curriculum_list = state.get("curriculum") or []
-            curr_title = curr_c.replace("_", " ").title()
-            for c in curriculum_list:
-                if _get(c, "concept_id") == curr_c:
-                    curr_title = _get(c, "name", curr_title)
-                    break
-
-            curr_p = int(round(state.get("mastery", {}).get(curr_c, 0.85) * 100))
-            recap_msg = (
-                f"👋 Welcome back! Last time we finished work on **{curr_title}** "
-                f"and reached {curr_p}% mastery. Ready to pick up right where we left off, "
-                f"or would you like a 2-minute refresher?"
-            )
-            state["tutor_response"] = recap_msg
-            state["assessment_done"] = True
-            if "diagnostic_state" in state and isinstance(state["diagnostic_state"], dict):
-                state["diagnostic_state"]["completed"] = True
-
-            curriculum = state.get("curriculum") or []
-            mastery_map = state.get("mastery", {})
-            active_concept = state.get("current_concept")
-            chat_history = [
-                {
-                    "id": str(uuid.uuid4()),
-                    "role": "assistant",
-                    "content": recap_msg,
-                    "question": None,
-                    "action": "resume",
-                    "metadata": None,
-                    "rag_context": None,
+                return {
+                    "session_id": existing_session["session_id"],
+                    "topic": existing_session.get("topic", topic),
+                    "chat_history": chat_history,
+                    "latest_message": chat_history[-1] if chat_history else None,
+                    "curriculum": format_curriculum_nodes(curriculum, active_concept, mastery_map, st.get("skipped_topics", [])),
+                    "mermaid_dag": generate_mermaid_dag(curriculum, active_concept, mastery_map),
+                    "mastery": mastery_map,
+                    "active_concept": active_concept,
+                    "depth_level": st.get("depth_level", depth),
+                    "phase": phase,
+                    "teaching_mode": st.get("teaching_mode", "mode_2_teach_first"),
+                    "doubts_asked": len(st.get("doubt_state", {}).get("doubt_log", [])),
+                    "visuals": st.get("signals", {}).get("visuals") or st.get("visuals") or [],
+                    "resumed": True,
                 }
-            ]
-            bkt_history = []
-            if curriculum:
-                bkt_history.append({
-                    "turn": 0,
-                    "mastery": {_get(c, "name", _get(c, "concept_id", "")): round(mastery_map.get(_get(c, "concept_id", ""), 0.0) * 100, 1) for c in curriculum}
-                })
 
-            await SessionRepository.create_session(
-                session_id=session_id,
-                student_id=student_id,
-                topic=topic,
-                state=state,
-                initial_message=chat_history[0],
-                bkt_history=bkt_history,
-            )
+        # 2. Creating a new session attempt: check if a reusable curriculum exists across cache or DB
+        cache_key = (norm_topic, depth)
+        curr_cache = get_curriculum_cache()
+        reusable_curriculum = None
 
-            return {
-                "session_id": session_id,
-                "topic": topic,
-                "chat_history": chat_history,
-                "curriculum": format_curriculum_nodes(curriculum, active_concept, mastery_map, state.get("skipped_topics", [])),
-                "mermaid_dag": generate_mermaid_dag(curriculum, active_concept, mastery_map),
-                "mastery": mastery_map,
-                "active_concept": active_concept,
-                "depth_level": state.get("depth_level", "deep"),
-                "phase": "teaching",
-                "teaching_mode": state.get("teaching_mode", "mode_2_teach_first"),
-                "doubts_asked": len(state.get("doubt_state", {}).get("doubt_log", [])),
-                "visuals": state.get("signals", {}).get("visuals") or state.get("visuals") or [],
+        if cache_key in curr_cache:
+            reusable_curriculum = [c.model_copy(deep=True) for c in curr_cache[cache_key]]
+        else:
+            # Check DB for any previously synthesized curriculum for this normalized topic
+            db_curr = await SessionRepository.find_curriculum_for_topic(norm_topic)
+            if db_curr:
+                reusable_curriculum = [CurriculumConcept(**c) if isinstance(c, dict) else c for c in db_curr]
+                curr_cache[cache_key] = [c.model_copy(deep=True) for c in reusable_curriculum]
+
+        session_id = str(uuid.uuid4())
+        initial_state = {
+            "student_id": student_id,
+            "target_topic": topic,
+            "messages": [],
+            "student_input": None,
+            "curriculum": reusable_curriculum,
+            "diagnostic_state": {
+                "completed": bool(reusable_curriculum is not None),
+                "questions": [],
+                "current_question_id": None,
+                "answers": {},
+                "assessments": {},
+            },
+            "learner_profile": None,
+            "mastery": {},
+            "bkt_states": {},
+            "learning_path": None,
+            "current_concept": None,
+            "teaching": {
+                "current_action": "initial",
+                "current_question": None,
+                "attempt_count": 0,
+                "misconception_history": [],
+                "current_objective": None,
+                "concept_completed": False,
+            },
+            "teaching_assessment": None,
+            "teaching_decision": None,
+            "socratic_response": None,
+            "tutor_response": None,
+            "critic_result": None,
+            "retry_count": 0,
+            "misconceptions": [],
+            "hint_level": 0,
+            "rag_context": None,
+            "depth_level": depth,
+            "assessment_done": False,
+            "self_reported_level": req.self_reported_level,
+            "teaching_mode": "mode_2_teach_first",
+            "teaching_step": "teach",
+            "pending_question": None,
+            "current_subtopic": None,
+            "subtopic_mastery": {},
+            "detected_intent": None,
+            "doubt_state": {
+                "doubt_stack": [],
+                "doubt_log": [],
+                "pending_clarity_check": False,
+                "clarity_doubt_id": None,
+                "active_doubt_response": None,
+            },
+            "misconceptions_log": [],
+            "signals": {
+                "hints_used": 0,
+                "attempts": 0,
+                "response_time": 0.0,
+                "stated_confidence": None,
+            },
+            "last_practice_time": None,
+            "study_plan": None,
+            "skipped_concepts": [],
+        }
+
+        # Step 1.A: BEGINNER
+        if req.self_reported_level == "beginner":
+            from multi_agent_tutor.app.Agents.onboarding_agent import handle_beginner_onboarding
+            state = handle_beginner_onboarding(initial_state)
+
+        # Step 1: FIRST VISIT LEVEL QUESTION
+        elif req.force_onboarding or (not req.self_reported_level and student_id.startswith("new_")):
+            from multi_agent_tutor.app.Agents.onboarding_agent import get_onboarding_greeting
+            greeting = get_onboarding_greeting(topic)
+            initial_state["onboarding_step"] = "awaiting_level"
+            initial_state["pending_question"] = {
+                "question_id": "onboarding_level",
+                "question": greeting,
+                "concept": "onboarding",
             }
+            initial_state["tutor_response"] = greeting
+            state = initial_state
 
-    initial_state = {
-        "student_id": student_id,
-        "target_topic": topic,
-        "messages": [],
-        "student_input": None,
-        "curriculum": None,
-        "diagnostic_state": {
-            "completed": False,
-            "questions": [],
-            "current_question_id": None,
-            "answers": {},
-            "assessments": {},
-        },
-        "learner_profile": None,
-        "mastery": {},
-        "bkt_states": {},
-        "learning_path": None,
-        "current_concept": None,
-        "teaching": {
-            "current_action": "initial",
-            "current_question": None,
-            "attempt_count": 0,
-            "misconception_history": [],
-            "current_objective": None,
-            "concept_completed": False,
-        },
-        "teaching_assessment": None,
-        "teaching_decision": None,
-        "socratic_response": None,
-        "tutor_response": None,
-        "critic_result": None,
-        "retry_count": 0,
-        "misconceptions": [],
-        "hint_level": 0,
-        "rag_context": None,
-        "depth_level": req.depth_level or "deep",
-        "assessment_done": False,
-        "self_reported_level": req.self_reported_level,
-        "teaching_mode": "mode_2_teach_first",
-        "teaching_step": "teach",
-        "pending_question": None,
-        "current_subtopic": None,
-        "subtopic_mastery": {},
-        "detected_intent": None,
-        "doubt_state": {
-            "doubt_stack": [],
-            "doubt_log": [],
-            "pending_clarity_check": False,
-            "clarity_doubt_id": None,
-            "active_doubt_response": None,
-        },
-        "misconceptions_log": [],
-        "signals": {
-            "hints_used": 0,
-            "attempts": 0,
-            "response_time": 0.0,
-            "stated_confidence": None,
-        },
-        "last_practice_time": None,
-        "study_plan": None,
-        "skipped_concepts": [],
-    }
+        # Step 1.B: "I KNOW SOME" / "COMFORTABLE" / DEFAULT
+        else:
+            state = await master_graph.ainvoke(initial_state)
 
-    # Step 1.A: BEGINNER
-    if req.self_reported_level == "beginner":
-        from multi_agent_tutor.app.Agents.onboarding_agent import handle_beginner_onboarding
-        state = handle_beginner_onboarding(initial_state)
+        resp = state.get("socratic_response")
+        initial_text = state.get("tutor_response", f"Welcome to SAGE! Let's begin learning {topic}.")
+        awaiting_status = state.get("awaiting") or ("answer" if not state.get("diagnostic_state", {}).get("completed") and state.get("pending_question") else "none")
+        initial_question = getattr(resp, "question", None) if resp else None
+        if awaiting_status != "answer":
+            initial_question = None
 
-    # Step 1: FIRST VISIT LEVEL QUESTION
-    elif req.force_onboarding or (not req.self_reported_level and student_id.startswith("new_")):
-        from multi_agent_tutor.app.Agents.onboarding_agent import get_onboarding_greeting
-        greeting = get_onboarding_greeting(topic)
-        initial_state["onboarding_step"] = "awaiting_level"
-        initial_state["pending_question"] = {
-            "question_id": "onboarding_level",
-            "question": greeting,
-            "concept": "onboarding",
+        chat_history = [
+            {
+                "id": str(uuid.uuid4()),
+                "role": "assistant",
+                "content": initial_text,
+                "question": initial_question,
+                "awaiting": awaiting_status,
+                "action": "diagnostic" if not state.get("diagnostic_state", {}).get("completed") else "initial",
+                "metadata": None,
+                "rag_context": state.get("rag_context"),
+            }
+        ]
+
+        curriculum = state.get("curriculum") or []
+        mastery_map = state.get("mastery", {})
+        active_concept = state.get("current_concept")
+
+        # Record initial BKT snapshot
+        bkt_history = []
+        if curriculum:
+            bkt_history.append({
+                "turn": 0,
+                "mastery": {_get(c, "name", _get(c, "concept_id", "")): round(mastery_map.get(_get(c, "concept_id", ""), 0.0) * 100, 1) for c in curriculum}
+            })
+
+            # Cache curriculum in memory
+            if cache_key not in curr_cache:
+                curr_cache[cache_key] = [CurriculumConcept(**c) if isinstance(c, dict) else c for c in curriculum]
+
+        # Persist new session transactionally to PostgreSQL / SQLite
+        await SessionRepository.create_session(
+            session_id=session_id,
+            student_id=student_id,
+            topic=topic,
+            state=state,
+            initial_message=chat_history[0],
+            bkt_history=bkt_history,
+        )
+
+        return {
+            "session_id": session_id,
+            "topic": topic,
+            "chat_history": chat_history,
+            "latest_message": chat_history[0],
+            "curriculum": format_curriculum_nodes(curriculum, active_concept, mastery_map, state.get("skipped_topics", [])),
+            "mermaid_dag": generate_mermaid_dag(curriculum, active_concept, mastery_map),
+            "mastery": mastery_map,
+            "active_concept": active_concept,
+            "depth_level": state.get("depth_level", depth),
+            "phase": "diagnostic" if not state.get("diagnostic_state", {}).get("completed") else "teaching",
+            "teaching_mode": state.get("teaching_mode", "mode_2_teach_first"),
+            "doubts_asked": len(state.get("doubt_state", {}).get("doubt_log", [])),
+            "visuals": state.get("signals", {}).get("visuals") or state.get("visuals") or [],
+            "resumed": False,
         }
-        initial_state["tutor_response"] = greeting
-        state = initial_state
-
-    # Step 1.B: "I KNOW SOME" / "COMFORTABLE" / DEFAULT
-    else:
-        state = master_graph.invoke(initial_state)
-
-    resp = state.get("socratic_response")
-    initial_text = state.get("tutor_response", f"Welcome to SAGE! Let's begin learning {topic}.")
-    awaiting_status = state.get("awaiting") or ("answer" if not state.get("diagnostic_state", {}).get("completed") and state.get("pending_question") else "none")
-    initial_question = getattr(resp, "question", None) if resp else None
-    if awaiting_status != "answer":
-        initial_question = None
-
-    chat_history = [
-        {
-            "id": str(uuid.uuid4()),
-            "role": "assistant",
-            "content": initial_text,
-            "question": initial_question,
-            "awaiting": awaiting_status,
-            "action": "diagnostic" if not state.get("diagnostic_state", {}).get("completed") else "initial",
-            "metadata": None,
-            "rag_context": state.get("rag_context"),
-        }
-    ]
-
-    curriculum = state.get("curriculum") or []
-    mastery_map = state.get("mastery", {})
-    active_concept = state.get("current_concept")
-
-    # Record initial BKT snapshot
-    bkt_history = []
-    if curriculum:
-        bkt_history.append({
-            "turn": 0,
-            "mastery": {_get(c, "name", _get(c, "concept_id", "")): round(mastery_map.get(_get(c, "concept_id", ""), 0.0) * 100, 1) for c in curriculum}
-        })
-
-    # Persist new session transactionally to PostgreSQL / SQLite
-    await SessionRepository.create_session(
-        session_id=session_id,
-        student_id=req.student_id or "student_001",
-        topic=topic,
-        state=state,
-        initial_message=chat_history[0],
-        bkt_history=bkt_history,
-    )
-
-    return {
-        "session_id": session_id,
-        "topic": topic,
-        "chat_history": chat_history,
-        "latest_message": chat_history[0],
-        "curriculum": format_curriculum_nodes(curriculum, active_concept, mastery_map, state.get("skipped_topics", [])),
-        "mermaid_dag": generate_mermaid_dag(curriculum, active_concept, mastery_map),
-        "mastery": mastery_map,
-        "active_concept": active_concept,
-        "depth_level": state.get("depth_level", "deep"),
-        "phase": "diagnostic" if not state.get("diagnostic_state", {}).get("completed") else "teaching",
-        "teaching_mode": state.get("teaching_mode", "mode_2_teach_first"),
-        "doubts_asked": len(state.get("doubt_state", {}).get("doubt_log", [])),
-        "visuals": state.get("signals", {}).get("visuals") or state.get("visuals") or [],
-    }
 
 
-@app.post("/api/chat")
-async def handle_chat(req: ChatRequest):
+class StreamingTokenQueue(asyncio.Queue):
+    """Async queue that tracks the cumulative count of tokens pushed."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tokens_emitted = 0
+
+    def put_nowait(self, item):
+        self.tokens_emitted += 1
+        super().put_nowait(item)
+
+    async def put(self, item):
+        self.tokens_emitted += 1
+        await super().put(item)
+
+
+async def _process_chat_turn(state: dict, user_msg: str, stream_queue: Optional[StreamingTokenQueue] = None) -> dict:
     """
-    Submits student response, advances multi-agent state graph, and returns Socratic guidance.
-    Persists updated state, conversation history, and BKT logs to PostgreSQL.
+    Executes a turn of tutoring: onboarding check, level shift, or full multi-agent graph.
+    If stream_queue is provided, tokens will be emitted directly from tutor agents.
     """
-    session = await SessionRepository.get_session(req.session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found. Please start a new session.")
-
-    state = session["state"]
-    chat_history = session["chat_history"]
-    bkt_history = session["bkt_history"]
-
-    user_msg = req.message.strip()
-    user_msg_obj = {
-        "id": str(uuid.uuid4()),
-        "role": "user",
-        "content": user_msg,
-    }
-    chat_history.append(user_msg_obj)
-
-    # 1. Mid-lesson switch: "actually I'm a beginner"
     from multi_agent_tutor.app.Agents.onboarding_agent import (
         is_level_change_to_beginner,
         detect_student_level,
@@ -586,6 +579,7 @@ async def handle_chat(req: ChatRequest):
         handle_beginner_onboarding,
     )
 
+    # 1. Mid-lesson switch: "actually I'm a beginner"
     if is_level_change_to_beginner(user_msg):
         confirm_msg = (
             "Got it! Resetting your journey to the **Beginner** path right now. 🚀\n"
@@ -606,7 +600,9 @@ async def handle_chat(req: ChatRequest):
             state.pop("onboarding_step", None)
             state["student_input"] = None
             state["messages"].append({"role": "user", "content": user_msg})
-            updated_state = master_graph.invoke(state)
+            if stream_queue is not None:
+                state["_stream_queue"] = stream_queue
+            updated_state = await master_graph.ainvoke(state)
         elif is_vague:
             if state.get("onboarding_step") == "awaiting_level":
                 clarify_q = get_clarifying_question(state.get("target_topic", "Binary Search"))
@@ -624,7 +620,9 @@ async def handle_chat(req: ChatRequest):
                 state.pop("onboarding_step", None)
                 state["student_input"] = None
                 state["messages"].append({"role": "user", "content": user_msg})
-                updated_state = master_graph.invoke(state)
+                if stream_queue is not None:
+                    state["_stream_queue"] = stream_queue
+                updated_state = await master_graph.ainvoke(state)
         else:
             clarify_q = get_clarifying_question(state.get("target_topic", "Binary Search"))
             updated_state = dict(state)
@@ -641,8 +639,33 @@ async def handle_chat(req: ChatRequest):
         state["student_input"] = user_msg
         state["retry_count"] = 0
         state["critic_result"] = None
-        updated_state = master_graph.invoke(state)
+        if stream_queue is not None:
+            state["_stream_queue"] = stream_queue
+        updated_state = await master_graph.ainvoke(state)
 
+    if stream_queue is not None and stream_queue.tokens_emitted == 0:
+        t_resp = updated_state.get("tutor_response") or ""
+        if t_resp:
+            from multi_agent_tutor.app.Agents.tutor import _emit_stream
+            _emit_stream(stream_queue, t_resp)
+
+    return updated_state
+
+
+async def _finalize_turn_payload(
+    session_id: str,
+    user_msg: str,
+    user_msg_obj: dict,
+    state: dict,
+    updated_state: dict,
+    chat_history: list,
+    bkt_history: list,
+    t0: float,
+) -> Tuple[dict, dict]:
+    """
+    Constructs the assistant message, executes safety/loop guards, updates transactional DB,
+    and formats the final payload returned to the client.
+    """
     # Gather assessment metadata
     meta = {}
     ass = updated_state.get("teaching_assessment")
@@ -783,7 +806,7 @@ async def handle_chat(req: ChatRequest):
 
     # Persist updated turn transactionally to PostgreSQL / SQLite
     await SessionRepository.update_session_turn(
-        session_id=req.session_id,
+        session_id=session_id,
         updated_state=updated_state,
         new_messages=[user_msg_obj, asst_msg],
         bkt_history=bkt_history,
@@ -791,10 +814,14 @@ async def handle_chat(req: ChatRequest):
         hake_gain=hake_data.get("hake_g") if hake_data else None,
     )
 
-    return {
-        "session_id": req.session_id,
+    total_elapsed = time.perf_counter() - t0
+    print(f"[TIMING] Total /api/chat latency: {total_elapsed:.3f}s")
+
+    final_payload = {
+        "session_id": session_id,
         "chat_history": chat_history,
         "latest_message": asst_msg,
+        "latency_seconds": round(total_elapsed, 3),
         "curriculum": format_curriculum_nodes(curriculum, active_concept, mastery_map, updated_state.get("skipped_topics", [])),
         "mermaid_dag": generate_mermaid_dag(curriculum, active_concept, mastery_map),
         "mastery": mastery_map,
@@ -809,6 +836,100 @@ async def handle_chat(req: ChatRequest):
         "review_queue": updated_state.get("review_queue") or [],
         "concept_transitions": updated_state.get("concept_transitions") or [],
     }
+    return asst_msg, final_payload
+
+
+@app.post("/api/chat")
+async def handle_chat(req: ChatRequest, request: Request = None):
+    """
+    Submits student response, advances multi-agent state graph, and returns Socratic guidance.
+    Supports real-time SSE streaming when requested via req.stream=True or Accept: text/event-stream.
+    Persists updated state, conversation history, and BKT logs to PostgreSQL.
+    """
+    t0 = time.perf_counter()
+    session = await SessionRepository.get_session(req.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found. Please start a new session.")
+
+    state = session["state"]
+    chat_history = session["chat_history"]
+    bkt_history = session["bkt_history"]
+
+    user_msg = req.message.strip()
+    user_msg_obj = {
+        "id": str(uuid.uuid4()),
+        "role": "user",
+        "content": user_msg,
+    }
+    chat_history.append(user_msg_obj)
+
+    accept_header = request.headers.get("accept", "") if request else ""
+    wants_stream = req.stream is True or (req.stream is not False and "text/event-stream" in accept_header)
+
+    if wants_stream:
+        stream_queue = StreamingTokenQueue()
+
+        async def run_turn():
+            updated_state = await _process_chat_turn(state, user_msg, stream_queue)
+            asst_msg, final_payload = await _finalize_turn_payload(
+                session_id=req.session_id,
+                user_msg=user_msg,
+                user_msg_obj=user_msg_obj,
+                state=state,
+                updated_state=updated_state,
+                chat_history=chat_history,
+                bkt_history=bkt_history,
+                t0=t0,
+            )
+            return final_payload
+
+        turn_task = asyncio.create_task(run_turn())
+
+        async def sse_event_stream():
+            try:
+                while True:
+                    try:
+                        token = await asyncio.wait_for(stream_queue.get(), timeout=0.03)
+                        yield f"event: token\ndata: {json.dumps({'delta': token, 'token': token})}\n\n"
+                        if not stream_queue.empty():
+                            await asyncio.sleep(0.012)
+                    except asyncio.TimeoutError:
+                        if turn_task.done():
+                            if stream_queue.empty():
+                                break
+                            continue
+
+                final_payload = await turn_task
+                yield f"event: done\ndata: {json.dumps(final_payload)}\n\n"
+            except asyncio.CancelledError:
+                # Client disconnected mid-stream
+                pass
+            except Exception as exc:
+                yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
+
+        return StreamingResponse(
+            sse_event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    # Standard non-streaming execution
+    updated_state = await _process_chat_turn(state, user_msg, None)
+    asst_msg, final_payload = await _finalize_turn_payload(
+        session_id=req.session_id,
+        user_msg=user_msg,
+        user_msg_obj=user_msg_obj,
+        state=state,
+        updated_state=updated_state,
+        chat_history=chat_history,
+        bkt_history=bkt_history,
+        t0=t0,
+    )
+    return final_payload
 
 
 @app.get("/api/session/{session_id}")
@@ -877,6 +998,25 @@ async def upload_document(
     try:
         text = extract_text_from_bytes(file_bytes, filename)
         count = ingest_text_content(text=text, topic=topic, source_name=filename)
+
+        # Track uploaded document in session state
+        sess_state = dict(session.get("state") or {})
+        docs_list = list(sess_state.get("uploaded_documents") or [])
+        if filename not in docs_list:
+            docs_list.append(filename)
+        sess_state["uploaded_documents"] = docs_list
+        sess_state["has_uploaded_docs"] = True
+
+        try:
+            await SessionRepository.update_session_turn(
+                session_id=session_id,
+                updated_state=sess_state,
+                new_messages=[],
+                bkt_history=session.get("bkt_history", []),
+            )
+        except Exception as repo_err:
+            print(f"[WARN] Failed to persist uploaded doc to session state: {repo_err}")
+
         return {
             "success": True,
             "filename": filename,
@@ -1062,4 +1202,5 @@ async def reset_session(req: ResetSessionRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("multi_agent_tutor.api.server:app", host="0.0.0.0", port=port)

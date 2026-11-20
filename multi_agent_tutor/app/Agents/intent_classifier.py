@@ -23,10 +23,13 @@ from multi_agent_tutor.app.schemas.intent import IntentClassification, IntentTyp
 from multi_agent_tutor.app.graph.state import TutorState
 
 
+import time
+
 # Structured LLM for ambiguous message intent classification
 _model = ChatOpenAI(
     model="gpt-4o-mini",
     temperature=0.0,
+    max_tokens=150,
 )
 
 _intent_llm = _model.with_structured_output(
@@ -43,11 +46,12 @@ A student is in a dialogue with a tutor. They must NEVER be penalized for asking
 
 Available Intents:
 1. ANSWER_ATTEMPT: The student is providing a direct answer to the pending question asked by the tutor.
-   CRITICAL RULE: If awaiting == 'answer' (or has_pending_question is True), any declarative on-topic statement (even long, even starting with "The ...") is an ANSWER_ATTEMPT and MUST be graded!
-   It is a DOUBT ONLY if it asks a question or expresses confusion (ends with ?, starts with "why/how/what/explain", "I don't understand", "wait").
+   CRITICAL RULE: If awaiting == 'answer' (or has_pending_question is True), a declarative on-topic statement attempting to answer the question is an ANSWER_ATTEMPT and MUST be graded!
+   It is a DOUBT if it asks a question, expresses confusion, asks for help, or notes that a concept was not taught or covered.
    Never classify as ANSWER_ATTEMPT if has_pending_question is False.
-2. DOUBT: The student is asking a question, expressing confusion, asking for clarification, or asking for help.
-   Examples: "Why does mid use integer division?", "What does invariant mean?", "I don't understand how pointers move", "I don't know".
+2. DOUBT: The student is asking a question, expressing confusion, asking for clarification, asking for help, or stating that the concept was not taught/explained.
+   Examples: "Why does mid use integer division?", "What does invariant mean?", "I don't understand how pointers move", "I don't know", "You haven't taught me this", "We haven't covered this topic", "You didn't explain this concept", "I don't know because you never taught this".
+   CRITICAL: Never classify a teaching gap statement ("you didn't teach this", "we haven't covered this") as an ANSWER_ATTEMPT!
 3. CONFIRMATION: The student is acknowledging understanding or answering an invitation to continue or clarity check.
    Examples: "ok", "got it", "makes sense", "understood", "yes", "clear", "done", "continue", "next", "ready".
 4. META: The student is requesting a change in learning flow, pacing, explanation style, or skipping.
@@ -57,8 +61,9 @@ Available Intents:
 
 CRITICAL PEDAGOGICAL ROUTING RULES:
 - If awaiting == 'answer':
-  A declarative, on-topic statement (even long, even starting with "The ...") is an ANSWER_ATTEMPT and MUST be graded.
-  It is a DOUBT only if it asks something or expresses confusion (question mark, why/how/what/explain, "I don't understand", "wait").
+  If the student states they were not taught or that the concept wasn't covered, classify as DOUBT (teaching gap), NEVER ANSWER_ATTEMPT.
+  Otherwise, a declarative, on-topic statement attempting to answer is an ANSWER_ATTEMPT and MUST be graded.
+  It is a DOUBT if it asks something, expresses confusion, or asks for help.
   When truly ambiguous, classify as ANSWER_ATTEMPT with reduced confidence instead of treating as a doubt.
 - If awaiting == 'clarity_check':
   Affirmations ("yes", "ok", "done", "got it", "makes sense", "clear") are CONFIRMATION.
@@ -121,6 +126,16 @@ META_PATTERNS = [
     (r"\b(skip\s+this|skip\s+to\s+next|next\s+topic|can\s+we\s+skip|move\s+on)\b", "skip"),
     (r"\b(show\s+(?:me\s+)?(?:a\s+)?diagram|draw\s+it|draw\s+a\s+diagram|can\s+you\s+draw|i\s+can'?t\s+picture\s+this|picture\s+this|show\s+visual|visualize\s+this|show\s+figure|diagram|figure)\b", "request_visual"),
     (r"\b(take\s+a\s+break|pause|stop\s+for\s+now)\b", "break"),
+]
+
+TEACHING_GAP_PATTERNS = [
+    r"\b(?:you\s+)?(?:haven'?t|havent|never|didn'?t|didnt|did\s+not)\s+(?:taught|teach|explain(?:ed)?|cover(?:ed)?|introduce(?:d)?)\b",
+    r"\b(?:we\s+)?(?:haven'?t|havent|never)\s+(?:cover(?:ed)?|learn(?:ed|t)?|(?:went|gone)\s+over|studied?|seen)\b",
+    r"\b(?:i\s+)?(?:haven'?t|havent)\s+(?:been\s+taught|learn(?:ed|t)?|covered?)\b",
+    r"\b(?:never|not)\s+(?:taught|explain(?:ed)?)\s+(?:this|me\s+this|that)\b",
+    r"\b(?:don'?t|dont)\s+know\s+because\s+(?:you\s+)?(?:never|haven'?t|havent|didn'?t)\s+(?:taught|explain(?:ed)?)\b",
+    r"\bwhen\s+did\s+(?:you|we)\s+(?:teach|explain|cover|learn)\b",
+    r"\b(?:never|didn'?t|didnt)\s+(?:hear|heard|know)\s+about\s+this\b",
 ]
 
 
@@ -188,6 +203,16 @@ def pre_filter_intent(
             meta_subintent="help_request",
             reasoning="Student indicated they do not know or requested help; handled as a doubt/help request.",
         )
+
+    # 3b. Teaching Gap indication ("You haven't taught me this") -> Treat as DOUBT, never wrong answer!
+    for tg_pattern in TEACHING_GAP_PATTERNS:
+        if re.search(tg_pattern, clean_msg, re.IGNORECASE):
+            return IntentClassification(
+                intent="DOUBT",
+                confidence=0.98,
+                meta_subintent="teaching_gap",
+                reasoning="Student indicated a teaching gap (concept not yet taught or covered); must never be penalized.",
+            )
 
     # 4. Exact or combined greeting / chitchat
     if any(norm_lower.startswith(g) for g in ["hi ", "hi", "hello ", "hello", "hey ", "hey", "good morning", "good evening", "good afternoon", "how are you"]) or norm_lower in CHITCHAT_PATTERNS:
@@ -429,6 +454,7 @@ def intent_classifier_node(state: TutorState) -> dict:
     topic = state.get("target_topic", "General")
     awaiting = state.get("awaiting") or ("clarity_check" if pending_clarity else ("answer" if (pending_q and bool(pending_q.get("question"))) else "none"))
 
+    t0 = time.perf_counter()
     classification = classify_student_intent(
         message=student_msg,
         pending_question=pending_q,
@@ -436,6 +462,8 @@ def intent_classifier_node(state: TutorState) -> dict:
         pending_clarity_check=pending_clarity,
         awaiting=awaiting,
     )
+    elapsed = time.perf_counter() - t0
+    print(f"[TIMING] IntentClassifier: {elapsed:.3f}s (intent={classification.intent})")
 
     return {
         "detected_intent": classification.model_dump(),

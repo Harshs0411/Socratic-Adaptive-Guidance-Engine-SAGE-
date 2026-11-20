@@ -76,6 +76,11 @@ def present_diagnostic_question(
         evaluation_criteria=question.evaluation_criteria,
     )
 
+    stream_queue = state.get("_stream_queue")
+    if stream_queue is not None:
+        from multi_agent_tutor.app.Agents.tutor import _emit_stream
+        _emit_stream(stream_queue, response)
+
     return {
         "tutor_response": response,
         "socratic_response": socratic_resp,

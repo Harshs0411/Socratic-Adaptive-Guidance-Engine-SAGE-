@@ -64,7 +64,64 @@ Write a helpful, pedagogical explanation. Do NOT include the final clarity check
     )
 ])
 
+from pydantic import BaseModel, Field
+
 _doubt_chain = DOUBT_EXPLANATION_PROMPT | _model
+
+
+class TeachingGapAudit(BaseModel):
+    was_taught: bool = Field(
+        description="True if the required concept or mechanism was adequately explained with definitions, intuition, or examples in the conversation. False if it was never explained or only mentioned as a future/planned topic."
+    )
+    concept_identified: str = Field(
+        description="The specific concept or topic the student says was not taught."
+    )
+    pedagogical_message: str = Field(
+        description="The warm pedagogical response following the exact rules: acknowledge and teach if untaught, or provide polite recap if already taught."
+    )
+
+
+TEACHING_GAP_AUDIT_PROMPT = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        """You are the Pedagogical Integrity and Teaching Gap Auditor for SAGE.
+The student was asked an assessment question by SAGE, and responded that they have not been taught or explained this concept (e.g., "You haven't taught me this", "We haven't covered this topic", "You didn't explain this concept", "I don't know because you never taught this").
+
+Your role is to strictly enforce these pedagogical rules:
+1. Examine the conversation history of what SAGE (assistant/tutor) has actually taught and explained to the student so far.
+2. Determine whether the specific concept, definition, or mechanism needed by the pending question was ACTUALLY explained in detail.
+   - Simply mentioning a term in passing or listing it as a future/planned lesson does NOT count as having taught it.
+   - A concept is only considered taught if SAGE provided an explanation, definition, intuition, or worked walkthrough of it in this conversation.
+3. Formulate the `pedagogical_message`:
+   CASE A: The concept was NOT adequately taught (was_taught = False):
+   - Acknowledge the teaching gap warmly, honestly, and humbly (e.g. "You're completely right! My apologies—I asked you about that before properly explaining it. Let's fix that right now!").
+   - Explain the missing concept simply and clearly using an intuitive mental model or simple concrete example.
+   - Do NOT penalize the student.
+   - Re-ask the original pending question so the student can apply what was just explained.
+   
+   CASE B: The concept WAS already explained in the conversation (was_taught = True):
+   - Respond politely, warmly, and encouragingly without being defensive, dismissive, or argumentative (e.g. "No problem at all! We actually touched on this a moment ago when we looked at [topic/step]—here is a quick refresher:").
+   - Provide a short, crystal-clear 2-3 sentence recap with the key idea.
+   - Do NOT penalize the student.
+   - Give the student another opportunity to answer the original pending question.
+"""
+    ),
+    (
+        "human",
+        """Previous Tutor Explanations in this Conversation:
+{conversation_history}
+
+Pending Question:
+{pending_question}
+
+Student Response:
+"{student_message}"
+
+Conduct the audit and produce the structured pedagogical response."""
+    )
+])
+
+_teaching_gap_chain = TEACHING_GAP_AUDIT_PROMPT | _model.with_structured_output(TeachingGapAudit, method="function_calling")
 
 
 def generate_safe_hint(
@@ -258,12 +315,77 @@ def handle_doubt_question(
                 "student_input": None,
             }
 
+    # 2b. Teaching Gap Handling ("You haven't taught me this")
+    from multi_agent_tutor.app.Agents.intent_classifier import TEACHING_GAP_PATTERNS
+    is_teaching_gap = (subintent == "teaching_gap") or any(
+        re.search(p, student_msg, re.IGNORECASE) for p in TEACHING_GAP_PATTERNS
+    )
+
+    if is_teaching_gap:
+        messages = state.get("messages") or []
+        tutor_history = []
+        for m in messages:
+            if m.get("role") in ("assistant", "tutor"):
+                c = m.get("content", "").strip()
+                if c:
+                    tutor_history.append(c)
+        history_text = "\n\n---\n\n".join(tutor_history[-6:]) if tutor_history else "No prior explanations in history."
+
+        try:
+            audit_res = _teaching_gap_chain.invoke({
+                "conversation_history": history_text,
+                "pending_question": pq_text,
+                "student_message": student_msg,
+            })
+            full_message = audit_res.pedagogical_message
+        except Exception:
+            full_message = (
+                f"You're completely right! My apologies—let's make sure we clearly cover this first.\n\n"
+                f"In {topic}, this concept builds on fundamental rules. Let's look at the question again:\n\n"
+                f"**Question:** {pq_text}"
+            )
+
+        if pq_text and pq_text != "None" and pq_text not in full_message:
+            full_message += f"\n\n**Question:** {pq_text}"
+
+        doubt_log.append({
+            "topic": topic,
+            "subtopic": subtopic,
+            "doubt_text": student_msg,
+            "timestamp": now_iso,
+            "teaching_gap": True,
+        })
+        doubt_state["doubt_log"] = doubt_log
+        doubt_state["pending_clarity_check"] = False
+        doubt_state["active_doubt_response"] = full_message
+
+        socratic_resp = SocraticResponse(
+            message=full_message,
+            question=pq_text,
+            action="explain",
+            question_type="conceptual",
+            expected_answer=pending_q.get("expected_answer", "") if isinstance(pending_q, dict) else "",
+            evaluator_type=pending_q.get("evaluator_type", "llm") if isinstance(pending_q, dict) else "llm",
+            evaluation_criteria=pending_q.get("evaluation_criteria", []) if isinstance(pending_q, dict) else [],
+        )
+
+        return {
+            "tutor_response": full_message,
+            "socratic_response": socratic_resp,
+            "doubt_state": doubt_state,
+            "pending_question": pending_q,
+            "awaiting": "answer",
+            "student_input": None,
+        }
+
     # Retrieve RAG context to ground the explanation (C.5)
     rag_data = retrieve_pedagogical_context(
         topic=topic,
         concept=subtopic or topic,
         current_action="explain",
         k=2,
+        student_input=actual_doubt,
+        state=state,
     )
     rag_text = rag_data.get("context_text") or "Standard textbook algorithmic principles."
 
@@ -732,7 +854,12 @@ def doubt_agent_node(state: TutorState) -> Dict[str, Any]:
 
     # If student confirmed clarity while pending_clarity_check is True:
     if is_clarity_check_active and intent_type in ("CONFIRMATION", "CHITCHAT"):
-        return handle_clarity_confirmation(state)
+        res = handle_clarity_confirmation(state)
+    else:
+        res = handle_doubt_question(state, student_msg, intent_data)
 
-    # Otherwise, handle doubt question
-    return handle_doubt_question(state, student_msg, intent_data)
+    stream_queue = state.get("_stream_queue")
+    if stream_queue is not None:
+        from multi_agent_tutor.app.Agents.tutor import _emit_stream
+        _emit_stream(stream_queue, res.get("tutor_response"))
+    return res

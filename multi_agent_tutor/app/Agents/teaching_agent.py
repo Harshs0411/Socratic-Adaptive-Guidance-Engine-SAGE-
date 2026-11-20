@@ -28,7 +28,6 @@ from multi_agent_tutor.app.config import (
 from multi_agent_tutor.app.graph.state import TutorState
 from multi_agent_tutor.app.schemas.socratic import SocraticResponse
 from multi_agent_tutor.app.curriculum_loader import load_rich_curriculum
-from multi_agent_tutor.app.rag.rag_tool import retrieve_pedagogical_context
 
 
 def choose_mode(topic_mastery: float) -> str:
@@ -59,6 +58,25 @@ _dyn_model = ChatOpenAI(
 )
 
 _DYNAMIC_PEDAGOGICAL_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+
+def invalidate_pedagogical_cache(topic: Optional[str] = None, concept_id: Optional[str] = None) -> None:
+    """
+    Safely invalidates in-memory cached pedagogical payloads.
+    - If both topic and concept_id are provided: invalidates that specific concept.
+    - If only topic is provided: invalidates all concepts under that topic.
+    - If neither is provided: flushes the entire cache.
+    Guarantees that stale content is not reused after curriculum changes or administrative updates.
+    """
+    global _DYNAMIC_PEDAGOGICAL_CACHE
+    if topic and concept_id:
+        _DYNAMIC_PEDAGOGICAL_CACHE.pop((topic.strip().lower(), concept_id.strip().lower()), None)
+    elif topic:
+        keys_to_del = [k for k in list(_DYNAMIC_PEDAGOGICAL_CACHE.keys()) if k[0] == topic.strip().lower()]
+        for k in keys_to_del:
+            _DYNAMIC_PEDAGOGICAL_CACHE.pop(k, None)
+    else:
+        _DYNAMIC_PEDAGOGICAL_CACHE.clear()
 
 
 class DynamicWorkedExample(BaseModel):
@@ -109,6 +127,14 @@ CRITICAL PEDAGOGICAL SAFETY DIRECTIVES:
 4. Provide exactly 2 rich worked examples with step-by-step details.
 5. Provide a valid, acyclic Mermaid diagram (e.g. flowchart TD or graph LR) that accurately traces the step-by-step state progression without loops or invalid syntax.
 6. Provide at least 8 distinct check questions: at least 3 Recall (Tier 1), at least 3 Application (Tier 2), and at least 2 Transfer (Tier 3).
+7. TOPICAL CONTINUITY & CONTEXT DIRECTIVES:
+   - All check questions must strictly test '{concept_id}' within '{topic}', maintaining tight topical cohesion.
+   - Do NOT jump abruptly to distant or unrelated technologies/topics.
+   - Every question must provide clear scenario context and premise so the student understands what is being asked.
+   - Progress difficulty gradually:
+     * Tier 1 (Recall): Focus on core purpose, definitions, and direct intuition of '{concept_id}'.
+     * Tier 2 (Application): Focus on specific mechanics, concrete scenarios, and handling operational steps.
+     * Tier 3 (Transfer): Synthesize trade-offs, boundary conditions, or connections to closely related mechanisms.
 """
     ),
     (
@@ -720,8 +746,13 @@ def select_check_question(
             return False
         return True
 
+    def get_q_field(q, field_name, default=None):
+        if isinstance(q, dict):
+            return q.get(field_name, default)
+        return getattr(q, field_name, default)
+
     # 1. Filter candidates matching the target tier
-    tier_candidates = [q for q in q_bank if getattr(q, "difficulty_tier", 1) == target_tier and is_candidate_valid(q)]
+    tier_candidates = [q for q in q_bank if get_q_field(q, "difficulty_tier", 1) == target_tier and is_candidate_valid(q)]
 
     # 2. If no valid candidates in target tier, search other tiers
     chosen_q = None
@@ -732,9 +763,9 @@ def select_check_question(
         if other_candidates:
             # Prefer higher tier if correct_checks >= 2, else lowest available
             if correct_checks >= 2:
-                other_candidates.sort(key=lambda q: getattr(q, "difficulty_tier", 1), reverse=True)
+                other_candidates.sort(key=lambda q: get_q_field(q, "difficulty_tier", 1), reverse=True)
             else:
-                other_candidates.sort(key=lambda q: getattr(q, "difficulty_tier", 1))
+                other_candidates.sort(key=lambda q: get_q_field(q, "difficulty_tier", 1))
             chosen_q = other_candidates[0]
 
     # 3. If still exhausted, dynamically append 3 fresh questions for this concept
@@ -769,15 +800,15 @@ def select_check_question(
         q_bank.extend([fresh_q1, fresh_q2, fresh_q3])
         chosen_q = fresh_q1
 
-    chosen_tier = getattr(chosen_q, "difficulty_tier", target_tier)
+    chosen_tier = get_q_field(chosen_q, "difficulty_tier", target_tier)
     return {
-        "question_id": getattr(chosen_q, "question_id", f"{concept_id}_q"),
-        "question": getattr(chosen_q, "question", ""),
-        "expected_answer": getattr(chosen_q, "expected_answer", ""),
-        "evaluation_criteria": getattr(chosen_q, "evaluation_criteria", []),
-        "evaluator_type": getattr(chosen_q, "evaluator_type", "llm"),
-        "question_type": getattr(chosen_q, "question_type", "conceptual"),
+        "question_id": get_q_field(chosen_q, "question_id", f"{concept_id}_q"),
+        "question": get_q_field(chosen_q, "question", ""),
+        "expected_answer": get_q_field(chosen_q, "expected_answer", ""),
+        "evaluation_criteria": get_q_field(chosen_q, "evaluation_criteria", []),
+        "evaluator_type": get_q_field(chosen_q, "evaluator_type", "llm"),
+        "question_type": get_q_field(chosen_q, "question_type", "conceptual"),
         "difficulty_tier": chosen_tier,
-        "is_transfer": getattr(chosen_q, "is_transfer", chosen_tier == 3),
+        "is_transfer": get_q_field(chosen_q, "is_transfer", chosen_tier == 3),
         "concept_id": concept_id,
     }

@@ -1,16 +1,35 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import TopicSelection from "./components/TopicSelection";
 import Workspace from "./components/Workspace";
+import { AlertCircle, X } from "lucide-react";
+import "./App.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000/api";
+const DEFAULT_STUDENT_ID = "student_001";
 
 export default function App() {
   const [session, setSession] = useState(null);
+  const [pastSessions, setPastSessions] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState(null);
 
+  // Load previous sessions for student from backend
+  const fetchPastSessions = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/sessions/student/${DEFAULT_STUDENT_ID}`);
+      if (res.ok) {
+        const data = await res.json();
+        setPastSessions(data.sessions || []);
+      }
+    } catch (err) {
+      console.warn("Could not load previous sessions:", err);
+    }
+  }, []);
+
+  // Check for saved active session on load
   useEffect(() => {
+    fetchPastSessions();
     const savedSessionId = localStorage.getItem("sage_active_session_id");
     if (savedSessionId) {
       setIsLoading(true);
@@ -29,16 +48,19 @@ export default function App() {
           setIsLoading(false);
         });
     }
-  }, []);
+  }, [fetchPastSessions]);
 
-  const handleStartSession = async (topic, depthLevel = "deep", selfReportedLevel = null) => {
+  // Start new learning session
+  const handleStartSession = async (topic, depthLevel = "deep", selfReportedLevel = null, startFresh = false) => {
+    if (isLoading) return;
     setIsLoading(true);
     setError(null);
     try {
       const payload = {
         topic,
-        student_id: "student_001",
+        student_id: DEFAULT_STUDENT_ID,
         depth_level: depthLevel,
+        start_fresh: Boolean(startFresh),
       };
       if (selfReportedLevel) {
         payload.self_reported_level = selfReportedLevel;
@@ -60,16 +82,38 @@ export default function App() {
       if (data?.session_id) {
         localStorage.setItem("sage_active_session_id", data.session_id);
       }
+      fetchPastSessions();
     } catch (err) {
       console.error("Failed to start session:", err);
-      setError(`Failed to initialize session: ${err.message}. Make sure the FastAPI backend is running on port 8000.`);
+      setError(`Failed to initialize session: ${err.message}. Make sure the FastAPI backend is running.`);
     } finally {
       setIsLoading(false);
     }
   };
 
+  // Resume a past session by ID
+  const handleSelectPastSession = async (sessionId) => {
+    if (!sessionId || isLoading || session?.session_id === sessionId) return;
+    setIsLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/session/${sessionId}`);
+      if (!res.ok) {
+        throw new Error("Session could not be loaded");
+      }
+      const data = await res.json();
+      setSession(data);
+      localStorage.setItem("sage_active_session_id", sessionId);
+    } catch (err) {
+      setError(`Failed to resume session: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Send student response
   const handleSendMessage = async (message) => {
-    if (!session) return;
+    if (!session || isSending) return;
     setIsSending(true);
     setError(null);
 
@@ -87,10 +131,14 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "text/event-stream, application/json",
+        },
         body: JSON.stringify({
           session_id: session.session_id,
           message,
+          stream: true,
         }),
       });
 
@@ -99,21 +147,115 @@ export default function App() {
         throw new Error(errData.detail || `Server error: ${res.status}`);
       }
 
-      const data = await res.json();
-      setSession((prev) => ({
-        ...prev,
-        chat_history: data.chat_history,
-        curriculum: data.curriculum,
-        mermaid_dag: data.mermaid_dag,
-        mastery: data.mastery,
-        active_concept: data.active_concept,
-        phase: data.phase,
-        is_graduated: data.is_graduated,
-        hake_gain: data.hake_gain,
-        teaching_mode: data.teaching_mode ?? prev.teaching_mode,
-        doubts_asked: data.doubts_asked ?? prev.doubts_asked,
-        visuals: data.visuals ?? prev.visuals,
-      }));
+      const contentType = res.headers.get("content-type") || "";
+
+      // Real-Time SSE Stream Consumption
+      if (contentType.includes("text/event-stream") && res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        const streamMsgId = "asst-stream-" + Date.now();
+        let accumulatedContent = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop() || "";
+
+          for (const part of parts) {
+            const lines = part.split("\n");
+            let eventType = "token";
+            let eventData = "";
+
+            for (const line of lines) {
+              if (line.startsWith("event: ")) {
+                eventType = line.slice(7).trim();
+              } else if (line.startsWith("data: ")) {
+                eventData = line.slice(6);
+              }
+            }
+
+            if (!eventData) continue;
+
+            if (eventType === "token") {
+              try {
+                const parsed = JSON.parse(eventData);
+                const delta = parsed.delta !== undefined ? parsed.delta : (parsed.token !== undefined ? parsed.token : "");
+                accumulatedContent += delta;
+
+                setSession((prev) => {
+                  const history = [...prev.chat_history];
+                  const existingIdx = history.findIndex((m) => m.id === streamMsgId);
+                  const streamMsg = {
+                    id: streamMsgId,
+                    role: "assistant",
+                    content: accumulatedContent,
+                    isStreaming: true,
+                  };
+                  if (existingIdx >= 0) {
+                    history[existingIdx] = streamMsg;
+                  } else {
+                    history.push(streamMsg);
+                  }
+                  return { ...prev, chat_history: history };
+                });
+              } catch (e) {
+                // If data was raw string instead of json
+                accumulatedContent += eventData;
+              }
+            } else if (eventType === "done") {
+              try {
+                const finalData = JSON.parse(eventData);
+                setSession((prev) => ({
+                  ...prev,
+                  chat_history: finalData.chat_history,
+                  curriculum: finalData.curriculum,
+                  mermaid_dag: finalData.mermaid_dag,
+                  mastery: finalData.mastery,
+                  active_concept: finalData.active_concept,
+                  phase: finalData.phase,
+                  is_graduated: finalData.is_graduated,
+                  hake_gain: finalData.hake_gain,
+                  teaching_mode: finalData.teaching_mode ?? prev.teaching_mode,
+                  doubts_asked: finalData.doubts_asked ?? prev.doubts_asked,
+                  visuals: finalData.visuals ?? prev.visuals,
+                }));
+                fetchPastSessions();
+              } catch (e) {
+                console.error("Failed to parse done event:", e);
+              }
+            } else if (eventType === "error") {
+              try {
+                const errObj = JSON.parse(eventData);
+                throw new Error(errObj.error || "Streaming error from SAGE tutor");
+              } catch (e) {
+                throw new Error(eventData);
+              }
+            }
+          }
+        }
+      } else {
+        // Fallback for non-streaming standard JSON response
+        const data = await res.json();
+        setSession((prev) => ({
+          ...prev,
+          chat_history: data.chat_history,
+          curriculum: data.curriculum,
+          mermaid_dag: data.mermaid_dag,
+          mastery: data.mastery,
+          active_concept: data.active_concept,
+          phase: data.phase,
+          is_graduated: data.is_graduated,
+          hake_gain: data.hake_gain,
+          teaching_mode: data.teaching_mode ?? prev.teaching_mode,
+          doubts_asked: data.doubts_asked ?? prev.doubts_asked,
+          visuals: data.visuals ?? prev.visuals,
+        }));
+        fetchPastSessions();
+      }
     } catch (err) {
       console.error("Failed to send message:", err);
       setError(`Failed to send message: ${err.message}`);
@@ -177,6 +319,11 @@ export default function App() {
     }
   };
 
+  const handleNewSession = () => {
+    setSession(null);
+    setError(null);
+  };
+
   const handleReset = async () => {
     if (session?.session_id) {
       fetch(`${API_BASE}/session/reset`, {
@@ -188,26 +335,60 @@ export default function App() {
     localStorage.removeItem("sage_active_session_id");
     setSession(null);
     setError(null);
+    fetchPastSessions();
   };
 
   return (
-    <div style={{ minHeight: "100vh", backgroundColor: "#0b0f19" }}>
+    <div style={{ minHeight: "100vh", backgroundColor: "var(--bg-app)", color: "var(--text-primary)" }}>
+      {/* Refined Toast Notification */}
       {error && (
-        <div style={{ backgroundColor: "#991b1b", color: "#fef2f2", padding: "0.75rem 1.5rem", fontSize: "0.875rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span>⚠️ {error}</span>
-          <button onClick={() => setError(null)} style={{ background: "none", border: "none", color: "#fecaca", cursor: "pointer", fontWeight: "700" }}>✕</button>
+        <div 
+          style={{
+            position: "fixed",
+            top: "1.25rem",
+            right: "1.25rem",
+            zIndex: 100,
+            maxWidth: "460px",
+            backgroundColor: "#fef2f2",
+            color: "#991b1b",
+            padding: "0.85rem 1.15rem",
+            borderRadius: "0.75rem",
+            border: "1px solid #fecaca",
+            boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.1)",
+            fontSize: "0.875rem",
+            display: "flex",
+            alignItems: "flex-start",
+            gap: "0.75rem",
+          }}
+        >
+          <AlertCircle size={18} style={{ flexShrink: 0, marginTop: "2px", color: "#dc2626" }} />
+          <div style={{ flex: 1, lineHeight: "1.4", fontWeight: "500" }}>{error}</div>
+          <button 
+            onClick={() => setError(null)} 
+            style={{ background: "none", border: "none", color: "#991b1b", cursor: "pointer", padding: "0 0.2rem" }}
+          >
+            <X size={16} />
+          </button>
         </div>
       )}
 
       {!session ? (
-        <TopicSelection onStart={handleStartSession} isLoading={isLoading} />
+        <TopicSelection 
+          onStart={handleStartSession} 
+          isLoading={isLoading} 
+          pastSessions={pastSessions}
+          onResumeSession={handleSelectPastSession}
+        />
       ) : (
         <Workspace
           sessionData={session}
+          pastSessions={pastSessions}
           onSendMessage={handleSendMessage}
           onUploadDoc={handleUploadDoc}
           onDrilldown={handleDrilldown}
           onReset={handleReset}
+          onNewSession={handleNewSession}
+          onResumeSession={handleSelectPastSession}
           isSending={isSending}
         />
       )}

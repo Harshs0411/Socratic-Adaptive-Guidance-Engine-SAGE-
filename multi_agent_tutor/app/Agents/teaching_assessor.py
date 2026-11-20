@@ -17,13 +17,16 @@ from multi_agent_tutor.app.utils.objective_evaluator import (
 load_dotenv(find_dotenv())
 
 
+import time
+
 # ==========================================================
 # MODEL
 # ==========================================================
 
 model = ChatOpenAI(
-    model="gpt-5-mini",
-    temperature=0.2,
+    model="gpt-4o-mini",
+    temperature=0.1,
+    max_tokens=300,
 )
 
 
@@ -69,386 +72,53 @@ Consider:
 4. Important misconceptions
 5. Whether the student has enough understanding
    to proceed
+6. Feedback explanation: In the 'feedback' field, provide a concise 1-2 sentence
+   explanation explicitly acknowledging the student's answer and explaining WHY it
+   is correct or what makes their reasoning sound. If partially correct or incorrect,
+   constructively explain what specific mechanism or detail was missing.
 
 Do NOT assume knowledge that the student did not
 demonstrate.
 
 ==================================================
-EXACT QUESTION
+EVALUATION PRINCIPLES & EQUIVALENCE
 ==================================================
 
-You MUST evaluate the answer against the exact
-question that was asked.
-
-Do not evaluate a broader question that the student
-was not asked.
-
-For example:
-
-Question:
-"What index of x is used when evaluating x[-n]
-at n=-3?"
-
-Student:
-"3"
-
-This is correct.
-
-Do NOT expect the student to explain all of
-time reversal unless the question asks for it.
-
-==================================================
-EXPECTED ANSWER
-==================================================
-
-The expected answer is a reference, not necessarily
-a literal string that the student must reproduce.
-
-Mathematical equivalence and equivalent wording
-must receive credit.
-
-For example:
-
-Expected:
-y[n] = sum from k=-infinity to infinity of
-x[k]h[n-k]
-
-Student:
-y[n]=(x*h)[n]=sum(x[k]h[n-k])
-
-This is mathematically equivalent and should
-receive strong credit.
-
-Another example:
-
-Expected:
-"The convolution output has indices 0 through
-M+N-2."
-
-Student:
-"The minimum n is 0 and the maximum is M+N-2."
-
-This is correct.
-
-Another example:
-
-Expected:
-"Multiply corresponding overlapping samples and
-sum the products."
-
-Student:
-"At each shift, multiply the overlapping values
-and add all the products."
-
-This is correct.
-
-==================================================
-SYMBOLIC MATHEMATICS
-==================================================
-
-For symbolic mathematical answers, evaluate the
-mathematical meaning rather than literal text.
-
-Recognize equivalent:
-
-- notation
-- LaTeX forms
-- algebraic forms
-- variable naming where appropriate
-- equivalent summation notation
-- equivalent mathematical expressions
-
-Do NOT mark a mathematically equivalent answer
-wrong merely because formatting differs.
-
-For example:
-
-Expected:
-y[n] = sum x[k]h[n-k]
-
-Student:
-y[n] = (x*h)[n]
-
-This can be correct if the question asks for
-the convolution expression and the notation is
-mathematically sufficient.
-
-However, if the question specifically asks for
-the expanded summation form, evaluate whether the
-student actually provided the required expansion.
-
-==================================================
-NUMERICAL CALCULATIONS AND SHORT ANSWERS
-==================================================
-
-When the question asks for a calculation, numerical result, sequence, or specific term:
-
-1. Look for the student's final result or calculation within their response.
-2. If the student gives the correct numerical value or sequence (e.g. 10 or [2, 5, 8, 3]), award full credit (score 1.0, understanding 'mastered').
-3. Do NOT penalize the student if they also include steps, explanations, formulas, or conversational context alongside the number (e.g. "y[1] = 10 because 1*4 + 2*3 = 10").
-4. If the student shows the correct method and reasoning but made a minor arithmetic error, award partial credit (score 0.5 - 0.7, understanding 'partial').
-
-==================================================
-MATHEMATICAL DERIVATIONS & REASONING (WHY QUESTIONS)
-==================================================
-
-When the question asks why an operation occurs (such as why convolution flips one signal, or the role of indices like h[n-k]):
-
-1. Credit equivalent algebraic explanations:
-   - For example: recognizing that in y[n] = sum x[k] h[n-k], the -k index means h[k] is time-reversed to h[-k] and then shifted by n (i.e. h[-k+n] = h[n-k]).
-2. Credit equivalent intuitive explanations:
-   - For example: explaining that reversing makes samples of h line up with x in opposing directions so as one slides across the other, each overlap is accumulated properly.
-3. If the student explains both the algebraic reversal (the -k) and the sliding/matching intuition, this is EXCELLENT reasoning. Award score 0.95 - 1.0, understanding 'mastered', and reasoning_quality 'strong'.
-4. Do NOT mark such answers wrong or invent misconceptions merely because their phrasing differs from expected_answer.
-
-==================================================
-MARKDOWN, LATEX, AND FORMATTING
-==================================================
-
-The student may use LaTeX math ($$...$$, \\(...\\)), bullet points, bold text, or line breaks.
-Focus entirely on the semantic mathematical meaning, never on formatting style.
-
-==================================================
-SCORE
-==================================================
-
-The score represents the quality of the student's
-demonstrated understanding of THIS question.
-
-Use approximately:
-
-1.0
-    Fully correct and well-reasoned.
-
-0.8-0.99
-    Correct with a minor omission or limited detail.
-
-0.6-0.79
-    Substantially correct but missing an important
-    part of the requested reasoning.
-
-0.4-0.59
-    Partial understanding with significant gaps.
-
-0.2-0.39
-    Weak understanding.
-
-0.0-0.19
-    Incorrect, irrelevant, or no meaningful attempt.
-
-Do not give a high score merely because the student
-used some correct terminology.
-
-==================================================
-UNDERSTANDING
-==================================================
-
-The understanding field must agree with the score.
-
-Use:
-
-mastered
-    Strongly correct answer demonstrating the
-    required understanding.
-
-good
-    Correct answer with minor limitations.
-
-partial
-    Some correct understanding but meaningful gaps.
-
-weak
-    Limited understanding.
-
-incorrect
-    Incorrect or no meaningful understanding.
-
-==================================================
-CONSISTENCY
-==================================================
-
-All fields MUST agree.
-
-NEVER produce:
-
-understanding = mastered
-score = 1.0
-misconceptions = ["student is wrong"]
-
-That is contradictory.
-
-If the student has a substantive error, the
-assessment must reflect that error.
-
-If the student is correct, do NOT invent a
-misconception.
-
-==================================================
-MISCONCEPTIONS
-==================================================
-
-Only include misconceptions actually supported
-by the student's answer.
-
-Do NOT turn missing detail into a misconception.
-
-Bad:
-
-Student:
-"M+N"
-
-Question:
-"Why is convolution length M+N-1?"
-
-Misconception:
-"Student does not understand convolution."
-
-This is too broad.
-
-Better:
-
-"Off-by-one error when determining the inclusive
-convolution output length."
-
-Only identify a technical misconception if the
-student's answer provides evidence for it.
-
-==================================================
-REASONING QUALITY
-==================================================
-
-Use:
-
-strong
-    Correct reasoning with a clear explanation.
-
-partial
-    Some correct reasoning but incomplete or unclear.
-
-weak
-    Incorrect reasoning, unsupported answer, or
-    no meaningful reasoning.
-
-For a question requiring only a numerical answer,
-do not penalize the student for not providing a
-long explanation if the question did not ask for one.
-
-==================================================
-CONFIDENCE
-==================================================
-
-Confidence represents how certain you are about
-your assessment.
-
-Use:
-
-0.9-1.0
-    Clearly correct or clearly incorrect.
-
-0.7-0.89
-    Mostly clear but with some ambiguity.
-
-0.4-0.69
-    Significant ambiguity.
-
-Do not artificially use high confidence for an
-ambiguous response.
-
-==================================================
-NO ANSWER / I DON'T KNOW
-==================================================
-
-If the student says:
-
-"I don't know"
-"I dont know"
-"I don't understand"
-"not sure"
-"no idea"
-
-or gives no meaningful answer:
-
-understanding = incorrect
-
-score = approximately 0.0
-
-reasoning_quality = weak
-
-confidence = high
-
-The misconception should describe the lack of
-demonstrated understanding.
-
-Do NOT invent a technical misconception.
-
-For example:
-
-"No meaningful understanding was demonstrated."
-
-==================================================
-IMPORTANT DISTINCTION
-==================================================
-
-Do not confuse:
-
-missing explanation
-
-with
-
-incorrect understanding.
-
-If the question asks:
-
-"What is the convolution result?"
-
-and the student gives the correct result,
-they can receive full credit even without a
-long explanation.
-
-If the question asks:
-
-"Explain why convolution reverses one signal."
-
-and the student only gives a formula without
-explaining the reversal, the answer is incomplete.
-
-==================================================
-PREVIOUS MISCONCEPTIONS
-==================================================
-
-Previous misconceptions are context only.
-
-Do not automatically assume they are present
-in the current answer.
-
-The student's CURRENT answer is the primary evidence.
-
-==================================================
-FINAL CHECK
-==================================================
-
-Before returning the assessment, verify:
-
-1. Did I evaluate the exact question?
-
-2. Is the student's answer mathematically correct?
-
-3. Did I allow equivalent mathematical notation?
-
-4. Does the score agree with understanding?
-
-5. Does reasoning_quality agree with the answer?
-
-6. Are misconceptions actually supported?
-
-7. Did I avoid inventing a misconception?
-
-8. Did I avoid assuming knowledge not demonstrated?
-
-9. If the student said "I don't know", did I mark
-   the response as incorrect/very low score?
-
-10. Am I returning ONLY TeachingAssessment?
+1. EXACT QUESTION SCOPE:
+   - Evaluate against the exact question asked. Never penalize for omitted unasked details.
+   - Do not confuse a missing unsolicited explanation with incorrect understanding.
+
+2. EQUIVALENCE & SEMANTIC CREDIT:
+   - Symbolic & Math: Credit equivalent algebraic forms, summation notation, LaTeX ($$...$$), and variable names.
+   - Numerical & Objective: If the correct value or sequence is present, award full credit (1.0, 'mastered'), even if accompanied by workings or conversational context. If method is sound with a minor arithmetic error, award partial credit (0.5 - 0.7, 'partial').
+   - Reasoning / Explanations: Credit sound intuition, mechanisms, and physical/computational models even if phrased differently from expected_answer.
+
+3. SCORING & UNDERSTANDING LEVELS:
+   - 1.0 (mastered): Fully correct and soundly reasoned.
+   - 0.80 - 0.99 (good): Correct with minor omission or limited detail.
+   - 0.50 - 0.79 (partial): Substantially correct but missing an important part of the requested reasoning.
+   - 0.20 - 0.49 (weak): Partial intuition with significant errors or gaps.
+   - 0.00 - 0.19 (incorrect): Incorrect, irrelevant, or no meaningful attempt.
+
+4. REASONING QUALITY:
+   - strong: Correct reasoning with clear explanation.
+   - partial: Some correct reasoning but incomplete or unclear.
+   - weak: Incorrect reasoning, unsupported answer, or no attempt.
+
+5. MISCONCEPTIONS & CONSISTENCY:
+   - All fields MUST agree: never produce mastered + misconceptions.
+   - Only include specific misconceptions directly evidenced in the answer. Never invent a misconception.
+   - Previous misconceptions are background context only; current answer is primary evidence.
+
+6. NO ANSWER / "I DON'T KNOW":
+   - If student expresses inability to answer ("I don't know", "not sure", "no idea"):
+     understanding="incorrect", score=0.0, reasoning_quality="weak", confidence=1.0.
+
+7. FINAL SELF-CHECK:
+   - Did I evaluate the exact question?
+   - Did I credit equivalent mathematical/semantic formulations?
+   - Do score, understanding, and reasoning_quality agree consistently?
+   - Is the 'feedback' explanation constructive, clear, and acknowledging of the student's reasoning?
 
 ==================================================
 CURRENT INPUT
@@ -641,21 +311,8 @@ def assess_teaching_response(
 ):
     """
     Evaluate a student's response.
-
-    Deterministic evaluation is used for answers where
-    correctness can be reliably verified using a formal
-    rule.
-
-    LLM evaluation is used for:
-
-        - conceptual questions
-        - application questions
-        - symbolic mathematical reasoning
-        - semantic/explanatory answers
-
-    Every assessment passes through a consistency
-    validation layer before reaching BKT.
     """
+    t0 = time.perf_counter()
 
     concept = state["current_concept"]
 
@@ -687,6 +344,21 @@ def assess_teaching_response(
     resp_question = getattr(response, "question", None) or (response.get("question") if isinstance(response, dict) else "")
     resp_expected = getattr(response, "expected_answer", None) or (response.get("expected_answer") if isinstance(response, dict) else "")
     resp_criteria = getattr(response, "evaluation_criteria", None) or (response.get("evaluation_criteria") if isinstance(response, dict) else [])
+
+    # Check for teaching gap claims: never penalize a student for a teaching gap!
+    from multi_agent_tutor.app.Agents.intent_classifier import TEACHING_GAP_PATTERNS
+    import re
+    if any(re.search(p, student_answer, re.IGNORECASE) for p in TEACHING_GAP_PATTERNS):
+        result = TeachingAssessment(
+            understanding="neutral",
+            score=1.0,
+            confidence=1.0,
+            reasoning_quality="Student identified a teaching gap; no penalty applied.",
+            misconceptions=[],
+        )
+        return {
+            "teaching_assessment": result,
+        }
 
     # Fast-path for explicit 'don't know' / unknowledgeable responses
     from multi_agent_tutor.app.Agents.assessment import is_dont_know_response
@@ -816,4 +488,6 @@ def assess_teaching_response(
         updated_doubt["pending_clarity_check"] = False
         return_state["doubt_state"] = updated_doubt
 
+    elapsed = time.perf_counter() - t0
+    print(f"[TIMING] TeachingAssessor: {elapsed:.3f}s (understanding={result.understanding}, score={result.score})")
     return return_state

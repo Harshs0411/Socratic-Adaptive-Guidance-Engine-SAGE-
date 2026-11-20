@@ -9,8 +9,9 @@ from multi_agent_tutor.app.schemas.assessment import (
 load_dotenv()
 
 model = ChatOpenAI(
-    model="gpt-5-mini",
-    temperature=0
+    model="gpt-4o-mini",
+    temperature=0,
+    max_tokens=300,
 )
 
 assessment_llm = model.with_structured_output(

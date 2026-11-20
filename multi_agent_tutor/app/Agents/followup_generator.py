@@ -11,8 +11,9 @@ from multi_agent_tutor.app.schemas.diagnostic import (
 load_dotenv()
 
 model = ChatOpenAI(
-    model="gpt-5-mini",
-    temperature=0.3
+    model="gpt-4o-mini",
+    temperature=0.2,
+    max_tokens=300,
 )
 
 follow_up_llm = model.with_structured_output(

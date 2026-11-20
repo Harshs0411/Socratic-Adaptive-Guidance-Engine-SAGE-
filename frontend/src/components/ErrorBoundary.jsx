@@ -22,18 +22,18 @@ export default class ErrorBoundary extends React.Component {
           style={{
             padding: "1rem",
             margin: "0.5rem",
-            borderRadius: "0.5rem",
-            backgroundColor: "#1e1e2e",
-            border: "1px solid #ef4444",
-            color: "#fca5a5",
+            borderRadius: "0.75rem",
+            backgroundColor: "#fef2f2",
+            border: "1px solid #fecaca",
+            color: "#991b1b",
             fontSize: "0.85rem",
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem", fontWeight: "700" }}>
-            <AlertTriangle size={18} style={{ color: "#ef4444" }} />
+            <AlertTriangle size={18} style={{ color: "#dc2626" }} />
             <span>Component Render Error</span>
           </div>
-          <p style={{ margin: "0 0 0.5rem 0", color: "#e2e8f0", fontSize: "0.8rem" }}>
+          <p style={{ margin: "0 0 0.5rem 0", color: "#7f1d1d", fontSize: "0.8rem" }}>
             {this.props.fallbackMessage || "An error occurred while displaying this section."}
           </p>
           <button
@@ -43,11 +43,12 @@ export default class ErrorBoundary extends React.Component {
               display: "inline-flex",
               alignItems: "center",
               gap: "0.3rem",
-              padding: "0.3rem 0.6rem",
-              borderRadius: "0.25rem",
-              backgroundColor: "#374151",
-              border: "none",
-              color: "#f8fafc",
+              padding: "0.35rem 0.75rem",
+              borderRadius: "0.5rem",
+              backgroundColor: "#ffffff",
+              border: "1px solid #fca5a5",
+              color: "#991b1b",
+              fontWeight: "600",
               fontSize: "0.75rem",
               cursor: "pointer",
             }}

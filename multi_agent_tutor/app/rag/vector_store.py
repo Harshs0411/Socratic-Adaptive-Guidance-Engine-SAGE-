@@ -80,6 +80,65 @@ Each chunk must cite a realistic, authoritative academic source (e.g. 'Deep Lear
 )
 
 
+# ----------------------------------------------------------------------
+# Uploaded Document Registry & Deduplication Cache
+# ----------------------------------------------------------------------
+
+_UPLOADED_DOCUMENTS: Dict[str, set] = {}
+_RAG_SEARCH_CACHE: Dict[tuple, List[Dict[str, Any]]] = {}
+
+
+def register_uploaded_document(topic: str, source_name: str) -> None:
+    """Registers an uploaded document under the specified topic and clears search cache."""
+    t = (topic or "general").lower().strip()
+    if t not in _UPLOADED_DOCUMENTS:
+        _UPLOADED_DOCUMENTS[t] = set()
+    _UPLOADED_DOCUMENTS[t].add(source_name)
+    _RAG_SEARCH_CACHE.clear()
+
+
+def get_uploaded_documents(topic: Optional[str] = None, state: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Returns the set of uploaded documents for the topic or session."""
+    docs = set()
+    if state:
+        for d in (state.get("uploaded_documents") or []):
+            docs.add(d)
+    if topic:
+        docs.update(_UPLOADED_DOCUMENTS.get(topic.lower().strip(), set()))
+    else:
+        for s in _UPLOADED_DOCUMENTS.values():
+            docs.update(s)
+    return list(docs)
+
+
+def has_uploaded_documents(topic: Optional[str] = None, state: Optional[Dict[str, Any]] = None) -> bool:
+    """
+    Lightweight, deterministic check whether any document/PDF has been uploaded
+    for the current topic or session. Never touches ChromaDB or embedding models.
+    """
+    if state and (state.get("has_uploaded_docs") or state.get("uploaded_documents")):
+        return True
+    return len(get_uploaded_documents(topic, state)) > 0
+
+
+def has_indexed_documents(topic: Optional[str] = None) -> bool:
+    """
+    Check if the vector store contains any uploaded or indexed documents
+    without calling any LLM synthesizer or embedding model.
+    """
+    if has_uploaded_documents(topic):
+        return True
+    try:
+        store = get_vector_store()
+        if topic:
+            existing = store.get(where={"topic": topic.lower()}, limit=1)
+            return bool(existing and existing.get("ids"))
+        else:
+            return store._collection.count() > 0
+    except Exception:
+        return False
+
+
 def index_topic_knowledge(topic: str, force_refresh: bool = False) -> int:
     """
     Ensure the vector store has indexed reference material for the given topic.
@@ -135,13 +194,18 @@ def search_knowledge(
 ) -> List[Dict[str, Any]]:
     """
     Perform dense semantic similarity search against the ChromaDB knowledge base.
-    Returns list of matching chunks with source citation and relevance score.
+    Only queries the database if documents exist for this topic (or globally).
+    Never automatically synthesizes synthetic LLM chunks on empty searches.
     """
-    store = get_vector_store()
+    # If no documents are uploaded or indexed for this topic, skip RAG search entirely
+    if not has_indexed_documents(topic):
+        return []
 
-    # Ensure topic is indexed
-    if topic:
-        index_topic_knowledge(topic)
+    cache_key = (query.strip().lower(), (topic or "general").strip().lower(), k)
+    if cache_key in _RAG_SEARCH_CACHE:
+        return _RAG_SEARCH_CACHE[cache_key]
+
+    store = get_vector_store()
 
     filter_dict = {"topic": topic.lower()} if topic else None
 
@@ -170,4 +234,5 @@ def search_knowledge(
             "similarity_score": round(similarity, 3),
         })
 
+    _RAG_SEARCH_CACHE[cache_key] = formatted_results
     return formatted_results

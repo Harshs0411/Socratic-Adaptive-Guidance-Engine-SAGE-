@@ -96,7 +96,7 @@ def advance_concept(state: TutorState):
     from multi_agent_tutor.app.Agents.teaching_agent import choose_mode
     next_mastery = state.get("mastery", {}).get(next_concept, 0.0)
     next_mode = choose_mode(next_mastery)
-    next_step = "explain" if next_mode == "mode_2_teach_first" else "check"
+    next_step = "explain" if next_mode == "mode_2_teach_first" else "teach"
 
     return {
         "learning_path": learning_path,
@@ -114,8 +114,9 @@ def advance_concept(state: TutorState):
             "misconception_history": [],
             "current_objective": None,
             "concept_completed": False,
+            "just_advanced_from": current_concept,
         },
-        "teaching_assessment": None,
+        "teaching_assessment": state.get("teaching_assessment"),
         "teaching_decision": None,
         "socratic_response": None,
     }

@@ -148,6 +148,11 @@ def meta_agent_node(state: TutorState) -> Dict[str, Any]:
         evaluation_criteria=["Student acknowledges guidance."],
     )
 
+    stream_queue = state.get("_stream_queue")
+    if stream_queue is not None:
+        from multi_agent_tutor.app.Agents.tutor import _emit_stream
+        _emit_stream(stream_queue, msg)
+
     return {
         "tutor_response": msg,
         "socratic_response": socratic_resp,

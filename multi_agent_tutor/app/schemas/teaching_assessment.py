@@ -1,4 +1,4 @@
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -32,3 +32,8 @@ class TeachingAssessment(BaseModel):
         "partial",
         "weak"
     ]
+
+    feedback: Optional[str] = Field(
+        default=None,
+        description="A concise 1-2 sentence explanation of why the student's answer is correct, partially correct, or what specific mechanism was missing."
+    )

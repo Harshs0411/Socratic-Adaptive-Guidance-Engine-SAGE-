@@ -4,14 +4,19 @@ import { Code, Eye } from "lucide-react";
 
 mermaid.initialize({
   startOnLoad: false,
-  theme: "dark",
+  theme: "default",
   securityLevel: "loose",
   suppressErrorRendering: true,
   themeVariables: {
-    fontFamily: "Inter, -apple-system, sans-serif",
+    fontFamily: "Plus Jakarta Sans, Inter, -apple-system, sans-serif",
     fontSize: "13px",
-    lineColor: "#6b7280",
-    edgeLabelBackground: "#1f2937",
+    lineColor: "#64748b",
+    edgeLabelBackground: "#f8fafc",
+    primaryColor: "#eef2ff",
+    primaryBorderColor: "#6366f1",
+    primaryTextColor: "#0f172a",
+    tertiaryColor: "#f0fdf4",
+    secondaryColor: "#f8fafc",
   },
 });
 
@@ -89,26 +94,26 @@ function renderStructuredFallback(chart) {
 
   if (decisions.length > 0 || nodeList.length > 0) {
     return (
-      <div style={{ padding: "0.85rem", backgroundColor: "#0b0f19", display: "flex", flexDirection: "column", gap: "1rem" }}>
+      <div style={{ padding: "1rem", backgroundColor: "#ffffff", display: "flex", flexDirection: "column", gap: "1rem" }}>
         {decisions.length > 0 && (
           <div>
-            <div style={{ fontSize: "0.75rem", fontWeight: "700", color: "#38bdf8", marginBottom: "0.4rem" }}>
+            <div style={{ fontSize: "0.75rem", fontWeight: "700", color: "#4f46e5", marginBottom: "0.45rem", textTransform: "uppercase" }}>
               💎 Decision Logic & Branch Flow
             </div>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.78rem", color: "#cbd5e1" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem", color: "#334155" }}>
               <thead>
-                <tr style={{ borderBottom: "1px solid #334155", color: "#94a3b8", textAlign: "left" }}>
-                  <th style={{ padding: "0.4rem 0.6rem" }}>Condition / Check</th>
-                  <th style={{ padding: "0.4rem 0.6rem" }}>Branch</th>
-                  <th style={{ padding: "0.4rem 0.6rem" }}>Action / Next Step</th>
+                <tr style={{ borderBottom: "1px solid var(--border-default)", color: "var(--text-muted)", textAlign: "left" }}>
+                  <th style={{ padding: "0.45rem 0.65rem" }}>Condition / Check</th>
+                  <th style={{ padding: "0.45rem 0.65rem" }}>Branch</th>
+                  <th style={{ padding: "0.45rem 0.65rem" }}>Action / Next Step</th>
                 </tr>
               </thead>
               <tbody>
                 {decisions.map((d, i) => (
-                  <tr key={i} style={{ borderBottom: "1px solid #1e293b" }}>
-                    <td style={{ padding: "0.4rem 0.6rem", fontWeight: "600", color: "#facc15" }}>{d.condition}</td>
-                    <td style={{ padding: "0.4rem 0.6rem", color: "#34d399", fontWeight: "600" }}>{d.branch}</td>
-                    <td style={{ padding: "0.4rem 0.6rem" }}>{d.action}</td>
+                  <tr key={i} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                    <td style={{ padding: "0.45rem 0.65rem", fontWeight: "600", color: "#d97706" }}>{d.condition}</td>
+                    <td style={{ padding: "0.45rem 0.65rem", color: "#059669", fontWeight: "600" }}>{d.branch}</td>
+                    <td style={{ padding: "0.45rem 0.65rem" }}>{d.action}</td>
                   </tr>
                 ))}
               </tbody>
@@ -118,23 +123,23 @@ function renderStructuredFallback(chart) {
 
         {nodeList.length > 0 && (
           <div>
-            <div style={{ fontSize: "0.75rem", fontWeight: "700", color: "#94a3b8", marginBottom: "0.4rem" }}>
+            <div style={{ fontSize: "0.75rem", fontWeight: "700", color: "var(--text-muted)", marginBottom: "0.45rem", textTransform: "uppercase" }}>
               📋 Architectural Components & States
             </div>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.78rem", color: "#cbd5e1" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem", color: "#334155" }}>
               <thead>
-                <tr style={{ borderBottom: "1px solid #334155", color: "#94a3b8", textAlign: "left" }}>
-                  <th style={{ padding: "0.4rem 0.6rem", width: "25%" }}>Component / Node</th>
-                  <th style={{ padding: "0.4rem 0.6rem" }}>Description / Value</th>
+                <tr style={{ borderBottom: "1px solid var(--border-default)", color: "var(--text-muted)", textAlign: "left" }}>
+                  <th style={{ padding: "0.45rem 0.65rem", width: "25%" }}>Component / Node</th>
+                  <th style={{ padding: "0.45rem 0.65rem" }}>Description / Value</th>
                 </tr>
               </thead>
               <tbody>
                 {nodeList.map((n, i) => (
-                  <tr key={i} style={{ borderBottom: "1px solid #1e293b" }}>
-                    <td style={{ padding: "0.4rem 0.6rem", fontWeight: "600", color: n.type === "decision" ? "#facc15" : "#38bdf8" }}>
+                  <tr key={i} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                    <td style={{ padding: "0.45rem 0.65rem", fontWeight: "600", color: n.type === "decision" ? "#d97706" : "#4f46e5" }}>
                       {n.type === "decision" ? `◇ ${n.id}` : n.id}
                     </td>
-                    <td style={{ padding: "0.4rem 0.6rem" }}>{n.label}</td>
+                    <td style={{ padding: "0.45rem 0.65rem" }}>{n.label}</td>
                   </tr>
                 ))}
               </tbody>
@@ -146,7 +151,7 @@ function renderStructuredFallback(chart) {
   }
 
   return (
-    <pre style={{ margin: 0, padding: "0.85rem", overflowX: "auto", fontSize: "0.78rem", color: "#cbd5e1", fontFamily: "monospace", whiteSpace: "pre-wrap", backgroundColor: "#0b0f19" }}>
+    <pre style={{ margin: 0, padding: "1rem", overflowX: "auto", fontSize: "0.8rem", color: "#0f172a", fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap", backgroundColor: "#f8fafc" }}>
       {chart}
     </pre>
   );
@@ -173,7 +178,6 @@ export default function MermaidDAG({ chart, title = null }) {
       })
       .catch((err) => {
         console.warn("Mermaid render error (falling back to structured text):", err);
-        // Suppress any bomb SVGs Mermaid may have injected into document
         try {
           document.querySelectorAll("[id^='dmermaid']").forEach((el) => el.remove());
         } catch (_) {}
@@ -184,13 +188,45 @@ export default function MermaidDAG({ chart, title = null }) {
   if (!chart) return null;
 
   return (
-    <div style={{ margin: "0.5rem 0", borderRadius: "0.75rem", backgroundColor: "#0d131f", border: "1px solid #374151", overflow: "hidden" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.4rem 0.8rem", borderBottom: "1px solid #1e293b", backgroundColor: "#111827", fontSize: "0.75rem", color: "#94a3b8" }}>
-        <span>{title || "📊 Concept / Flow Diagram"}</span>
+    <div 
+      style={{ 
+        margin: "0.75rem 0", 
+        borderRadius: "0.85rem", 
+        overflow: "hidden",
+        backgroundColor: "#ffffff",
+        border: "1px solid var(--border-subtle)",
+        boxShadow: "0 2px 8px rgba(0, 0, 0, 0.04)"
+      }}
+    >
+      <div 
+        style={{ 
+          display: "flex", 
+          justifyContent: "space-between", 
+          alignItems: "center", 
+          padding: "0.5rem 1rem", 
+          borderBottom: "1px solid var(--border-subtle)", 
+          backgroundColor: "#f8fafc", 
+          fontSize: "0.75rem", 
+          color: "var(--text-secondary)",
+          fontWeight: "600",
+        }}
+      >
+        <span style={{ color: "var(--text-primary)" }}>{title || "📊 Concept / Flow Diagram"}</span>
         <button
           type="button"
           onClick={() => setShowRaw(!showRaw)}
-          style={{ background: "none", border: "1px solid #334155", borderRadius: "0.25rem", color: "#94a3b8", padding: "0.15rem 0.45rem", fontSize: "0.7rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.25rem" }}
+          style={{ 
+            background: "#ffffff", 
+            border: "1px solid var(--border-default)", 
+            borderRadius: "0.35rem", 
+            color: "var(--text-secondary)", 
+            padding: "0.2rem 0.55rem", 
+            fontSize: "0.7rem", 
+            cursor: "pointer", 
+            display: "flex", 
+            alignItems: "center", 
+            gap: "0.3rem" 
+          }}
         >
           {showRaw ? <Eye size={12} /> : <Code size={12} />}
           <span>{showRaw ? "Render Diagram" : "Structured Table / Text"}</span>
@@ -206,8 +242,8 @@ export default function MermaidDAG({ chart, title = null }) {
             overflowX: "auto",
             display: "flex",
             justifyContent: "center",
-            padding: "1rem",
-            backgroundColor: "#0d131f",
+            padding: "1.25rem",
+            backgroundColor: "#ffffff",
           }}
         />
       )}

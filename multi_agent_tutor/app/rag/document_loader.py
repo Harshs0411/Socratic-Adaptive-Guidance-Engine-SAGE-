@@ -7,7 +7,10 @@ from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 
-from multi_agent_tutor.app.rag.vector_store import get_vector_store
+from multi_agent_tutor.app.rag.vector_store import (
+    get_vector_store,
+    register_uploaded_document,
+)
 
 
 DOCUMENTS_DIR = os.path.abspath(
@@ -92,6 +95,7 @@ def ingest_text_content(
     if docs:
         store = get_vector_store()
         store.add_documents(docs)
+        register_uploaded_document(topic, source_name)
 
     return len(docs)
 

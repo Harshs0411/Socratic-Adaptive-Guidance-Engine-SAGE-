@@ -1,3 +1,4 @@
+import time
 from multi_agent_tutor.app.graph.state import TutorState
 from multi_agent_tutor.app.schemas.bkt import BKTState
 
@@ -13,10 +14,8 @@ def update_mastery(
     """
     Update BKT knowledge for the current concept
     after evaluating a student's answer.
-
-    The TeachingAssessment score and confidence
-    are converted into continuous evidence.
     """
+    t0 = time.perf_counter()
 
     # Credit assignment: update the concept that the question belongs to (Fix G)
     target_concept_id = None
@@ -66,6 +65,15 @@ def update_mastery(
         bkt_states[concept_id] = current_bkt
 
     # --------------------------------------------------
+    # ZERO PENALTY ON TEACHING GAP
+    # --------------------------------------------------
+    if getattr(assessment, "understanding", "") == "neutral" or "teaching gap" in str(getattr(assessment, "reasoning_quality", "")).lower():
+        return {
+            "bkt_states": bkt_states,
+            "mastery": dict(state.get("mastery", {})),
+        }
+
+    # --------------------------------------------------
     # SOFT EVIDENCE
     # --------------------------------------------------
 
@@ -95,7 +103,7 @@ def update_mastery(
     )
 
     # Roll up mastery to parent concept if this is a drilldown child
-    curriculum = state.get("curriculum", [])
+    curriculum = state.get("curriculum") or []
     parent_id = None
     for c in curriculum:
         cid = getattr(c, "concept_id", "") if hasattr(c, "concept_id") else c.get("concept_id", "")
@@ -116,6 +124,9 @@ def update_mastery(
             mastery[parent_id] = round(parent_avg, 4)
             if parent_id in bkt_states:
                 bkt_states[parent_id] = BKTState(p_know=round(parent_avg, 4))
+
+    elapsed = time.perf_counter() - t0
+    print(f"[TIMING] MasteryUpdater: {elapsed:.4f}s (concept={concept_id})")
 
     return {
         "bkt_states": bkt_states,

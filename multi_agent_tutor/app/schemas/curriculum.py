@@ -84,7 +84,7 @@ class CurriculumConcept(BaseModel):
     name: str
     description: str
     prerequisites: List[str] = Field(default_factory=list)
-    difficulty: int = Field(ge=1, le=5)
+    difficulty: int = Field(default=1, ge=1, le=5)
     parent_id: Optional[str] = None
 
 

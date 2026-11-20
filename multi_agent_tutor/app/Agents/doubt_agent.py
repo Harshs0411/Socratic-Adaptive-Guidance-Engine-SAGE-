@@ -255,6 +255,11 @@ def handle_doubt_question(
 
     now_iso = datetime.now(timezone.utc).isoformat()
     subintent = doubt_info.get("meta_subintent") if doubt_info else None
+    actual_doubt = (
+        (doubt_info.get("doubt_part") or student_msg)
+        if doubt_info and doubt_info.get("is_mixed")
+        else student_msg
+    )
     is_help_request = (subintent == "help_request")
     is_clarity_negation = (subintent == "clarity_negation")
     pq_text = pending_q.get("question", "None") if isinstance(pending_q, dict) else str(pending_q or "None")

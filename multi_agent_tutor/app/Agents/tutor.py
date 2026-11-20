@@ -369,6 +369,7 @@ def sage_agent(state: TutorState):
         from multi_agent_tutor.app.Agents.teaching_agent import _DYNAMIC_PEDAGOGICAL_CACHE
         _DYNAMIC_PEDAGOGICAL_CACHE.pop((topic.strip().lower(), concept.strip().lower()), None)
 
+    feedback_prefix = ""
     is_mocked = hasattr(sage_chain.invoke, "assert_called")
 
     if not is_mocked:
@@ -377,7 +378,6 @@ def sage_agent(state: TutorState):
         prev_qid = prev_pq.get("question_id") if isinstance(prev_pq, dict) else (getattr(prev_pq, "question_id", None) if prev_pq else None)
 
         # Build Assessor-to-Tutor Feedback Handoff (Fix C)
-        feedback_prefix = ""
         if assessment is not None:
             ass_score = getattr(assessment, "score", 0.0) if not isinstance(assessment, dict) else assessment.get("score", 0.0)
             ass_misconceptions = getattr(assessment, "misconceptions", []) if not isinstance(assessment, dict) else assessment.get("misconceptions", [])

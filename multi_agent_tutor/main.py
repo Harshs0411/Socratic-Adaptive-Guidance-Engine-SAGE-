@@ -75,7 +75,6 @@ def print_diagnostic_report(state):
 def print_teaching_state(state):
     concept = state.get("current_concept", "N/A")
     mastery = state.get("mastery", {}).get(concept, 0.0)
-    teaching = state.get("teaching", {})
     decision = state.get("teaching_decision")
     assessment = state.get("teaching_assessment")
 

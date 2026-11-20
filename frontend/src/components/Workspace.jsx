@@ -1,9 +1,8 @@
 import React, { useState, useRef, useEffect } from "react";
 import { 
   Send, Brain, BookOpen, ChevronDown, ChevronUp, Upload, 
-  RotateCcw, Sparkles, CheckCircle2, Award, Download, 
-  Eye, EyeOff, Layers, HelpCircle, MessageSquare, 
-  PanelLeftClose, PanelLeft, Plus, History, User, Check, AlertCircle, Compass, Zap
+  RotateCcw, Award, Download, Eye, EyeOff, Layers, 
+  HelpCircle, PanelLeftClose, PanelLeft, Plus, History, User, Compass
 } from "lucide-react";
 import confetti from "canvas-confetti";
 import MermaidDAG from "./MermaidDAG";
@@ -152,7 +151,7 @@ export default function Workspace({
     (curriculum || []).forEach((c) => {
       md += `- **${c.name}**: ${(c.score * 100).toFixed(1)}% (Status: Mastered)\n`;
     });
-    md += `\n---\n*Verified by SAGE Autonomous Pedagogical Engine (LangGraph + SQLite + OpenAI)*\n`;
+    md += `\n---\n*Verified by SAGE Autonomous Pedagogical Engine (LangGraph + PostgreSQL + OpenAI)*\n`;
 
     const blob = new Blob([md], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);

@@ -12,7 +12,7 @@ Covers:
    - Conceptual doubt mid-diagnostic -> patient explanation + clarity check.
    - Confirmation ("makes sense") -> resume bridge restating question.
    - Quick action "Show diagram" -> Mermaid diagram rendered.
-   - Page refresh -> state & chat history rehydrated cleanly from SQLite DB.
+   - Page refresh -> state & chat history rehydrated cleanly from PostgreSQL DB.
 3. Custom topic ("Guardrails in LLM Systems"):
    - BUG B fix verification: dynamic pedagogical payload generated without binary search/phonebook contamination.
 4. Screenshots saved to docs/qa/screenshots/
@@ -27,7 +27,7 @@ import socket
 import subprocess
 import requests
 from pathlib import Path
-from playwright.sync_api import sync_playwright, expect
+from playwright.sync_api import sync_playwright
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
@@ -275,7 +275,7 @@ def main():
             page.click("button:has-text('Show diagram')")
 
             print("⏳ Waiting for visual diagram response...")
-            diag_reply = wait_for_tutor_reply(page, msg_count)
+            wait_for_tutor_reply(page, msg_count)
             msg_count = page.locator(".markdown-body").count()
             time.sleep(2)  # Allow Mermaid rendering
 
@@ -284,7 +284,7 @@ def main():
             print(f"📸 Captured screenshot: {shot_diag.name}")
 
             # --- Step 2f: Refresh & Rehydrate ---
-            print("\n👉 STEP 2f: Refreshing browser page to test state rehydration from SQLite...")
+            print("\n👉 STEP 2f: Refreshing browser page to test state rehydration from PostgreSQL...")
             page.reload()
             page.wait_for_load_state("networkidle")
             page.wait_for_selector(".markdown-body", timeout=30000)

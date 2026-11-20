@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import patch, MagicMock
 from multi_agent_tutor.app.graph.state import TutorState
 from multi_agent_tutor.app.Agents.doubt_agent import doubt_agent_node, handle_doubt_question

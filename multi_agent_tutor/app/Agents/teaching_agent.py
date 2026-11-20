@@ -20,13 +20,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from multi_agent_tutor.app.config import (
     MODE_SWITCH_MASTERY_THRESHOLD,
     REMEDIATION_CAP,
-    HINT_LADDER_MAX_LEVEL,
-    SUBTOPIC_MIN_CORRECT_CHECKS,
-    SUBTOPIC_REQUIRE_TRANSFER,
-    MASTERY_ADVANCE_THRESHOLD,
 )
-from multi_agent_tutor.app.graph.state import TutorState
-from multi_agent_tutor.app.schemas.socratic import SocraticResponse
 from multi_agent_tutor.app.curriculum_loader import load_rich_curriculum
 
 
@@ -169,8 +163,8 @@ def _generate_fallback_subtopic_data(topic: str, concept_id: str) -> Dict[str, A
                 step_by_step_solution=[
                     f"1. Initialize system configuration and specify active constraints for {clean_title}.",
                     f"2. Evaluate incoming parameters against the governing rules of {clean_topic}.",
-                    f"3. Execute the core state transition and capture deterministic outputs.",
-                    f"4. Confirm that post-execution invariant conditions remain satisfied.",
+                    "3. Execute the core state transition and capture deterministic outputs.",
+                    "4. Confirm that post-execution invariant conditions remain satisfied.",
                 ],
                 key_takeaway=f"{clean_title} provides predictable, verified execution boundaries in {clean_topic}.",
             ),
@@ -179,9 +173,9 @@ def _generate_fallback_subtopic_data(topic: str, concept_id: str) -> Dict[str, A
                 problem=f"Trace how {clean_title} behaves under boundary conditions in {clean_topic}.",
                 step_by_step_solution=[
                     f"1. Inject boundary inputs near the tolerance threshold of {clean_title}.",
-                    f"2. Verify that guard mechanisms intercept out-of-range deviations.",
-                    f"3. Apply error containment or fallback recovery routines.",
-                    f"4. Restore nominal system operation without violating consistency.",
+                    "2. Verify that guard mechanisms intercept out-of-range deviations.",
+                    "3. Apply error containment or fallback recovery routines.",
+                    "4. Restore nominal system operation without violating consistency.",
                 ],
                 key_takeaway=f"Robust boundary checking in {clean_title} prevents cascading system failures.",
             ),
@@ -220,21 +214,21 @@ def _generate_fallback_subtopic_data(topic: str, concept_id: str) -> Dict[str, A
             DynamicCheckQuestion(
                 question_id=f"{concept_id}_check_4",
                 question=f"How would you apply {clean_title} to handle an unexpected boundary input in {clean_topic}?",
-                expected_answer=f"By validating against constraints, intercepting violations, and executing fallback recovery.",
+                expected_answer="By validating against constraints, intercepting violations, and executing fallback recovery.",
                 evaluation_criteria=["Identifies boundary condition", "Describes systematic handling/validation"],
                 difficulty_tier=2,
             ),
             DynamicCheckQuestion(
                 question_id=f"{concept_id}_check_5",
                 question=f"Walk through how {clean_title} modifies or preserves state during a single execution step.",
-                expected_answer=f"It computes the current step transition, checks invariants, and produces verified outputs.",
+                expected_answer="It computes the current step transition, checks invariants, and produces verified outputs.",
                 evaluation_criteria=["Traces state change accurately", "Maintains invariant constraints"],
                 difficulty_tier=2,
             ),
             DynamicCheckQuestion(
                 question_id=f"{concept_id}_check_6",
                 question=f"Suppose an edge case triggers in {clean_title}. What exact sequence of events resolves it?",
-                expected_answer=f"Detection of threshold breach, state containment, and deterministic error handling.",
+                expected_answer="Detection of threshold breach, state containment, and deterministic error handling.",
                 evaluation_criteria=["Specifies detection mechanism", "Details resolution steps"],
                 difficulty_tier=2,
             ),
@@ -276,7 +270,6 @@ def sanitize_analogy(analogy: str, topic: str, concept_id: str) -> str:
                 "task is solved directly, the result is handed back up the call stack frame by frame, allowing each caller to synthesize "
                 "the return value until the final answer is computed."
             )
-        clean_title = concept_id.replace("_", " ").title()
         return f"A structured pipeline in {topic}: each stage operates on an isolated execution frame and returns verified output to its caller."
     return analogy
 
@@ -784,7 +777,7 @@ def select_check_question(
         fresh_q2 = DynamicCheckQuestion(
             question_id=f"{concept_id}_dyn_{curr_len + 2}",
             question=f"Contrast the nominal operation of {clean_title} against its behavior when unexpected input occurs.",
-            expected_answer=f"Nominal operation performs deterministic state updates; unexpected inputs trigger validation guards or fallbacks.",
+            expected_answer="Nominal operation performs deterministic state updates; unexpected inputs trigger validation guards or fallbacks.",
             evaluation_criteria=["Contrasts nominal vs unexpected behavior", "Mentions guard/fallback actions"],
             difficulty_tier=target_tier,
             is_transfer=(target_tier == 3),
@@ -792,7 +785,7 @@ def select_check_question(
         fresh_q3 = DynamicCheckQuestion(
             question_id=f"{concept_id}_dyn_{curr_len + 3}",
             question=f"How would an engineer verify that {clean_title} has executed correctly in an end-to-end {clean_topic} pipeline?",
-            expected_answer=f"By asserting post-conditions, checking output invariants, and confirming state consistency.",
+            expected_answer="By asserting post-conditions, checking output invariants, and confirming state consistency.",
             evaluation_criteria=["Specifies post-condition verification", "Checks state consistency"],
             difficulty_tier=target_tier,
             is_transfer=(target_tier == 3),

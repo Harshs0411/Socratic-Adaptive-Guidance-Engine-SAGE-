@@ -1,7 +1,6 @@
-import os
 import re
 import time
-from typing import List, Optional, Dict, Tuple
+from typing import List, Dict, Tuple
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())
 

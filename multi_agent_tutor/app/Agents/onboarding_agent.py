@@ -16,12 +16,10 @@ from multi_agent_tutor.app.config import (
     DEFAULT_P_TRANSIT,
     DEFAULT_P_GUESS,
     DEFAULT_P_SLIP,
-    DEFAULT_P_L0,
 )
 from multi_agent_tutor.app.graph.state import TutorState
 from multi_agent_tutor.app.schemas.bkt import BKTState
 from multi_agent_tutor.app.schemas.diagnostic import DiagnosticQuestion
-from multi_agent_tutor.app.schemas.socratic import SocraticResponse
 from multi_agent_tutor.app.curriculum_loader import load_rich_curriculum, load_curriculum_concepts
 from multi_agent_tutor.app.Agents.learning_path_planner import build_learning_path
 
@@ -121,7 +119,7 @@ def get_onboarding_greeting(topic: str) -> str:
 def get_clarifying_question(topic: str) -> str:
     """Generates a single clarifying question for vague student replies."""
     return (
-        f"No worries at all! Let me help calibrate: Have you ever implemented or traced a search algorithm in code before?\n\n"
+        "No worries at all! Let me help calibrate: Have you ever implemented or traced a search algorithm in code before?\n\n"
         "- If you've never written or seen one, we can start right as a **Beginner**.\n"
         "- If you've seen the general idea before, we can start with **Some knowledge**.\n\n"
         "Which of those feels closer?"

@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { 
-  Brain, Sparkles, ArrowRight, ShieldCheck, Database, 
-  Layers, Compass, BookOpen, Clock, ChevronRight, Zap, CheckCircle2 
+  Brain, Sparkles, ArrowRight, Layers, 
+  Compass, Clock, ChevronRight, Zap, CheckCircle2 
 } from "lucide-react";
 
 export default function TopicSelection({ onStart, isLoading, pastSessions = [], onResumeSession }) {

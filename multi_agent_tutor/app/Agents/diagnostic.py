@@ -1,5 +1,3 @@
-#11 point in prompt is added by me
-
 from dotenv import load_dotenv, find_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate

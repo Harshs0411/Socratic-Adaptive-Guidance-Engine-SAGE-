@@ -4,7 +4,7 @@ import time
 import shutil
 import tempfile
 import subprocess
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 
 TIMEOUT_SECONDS = 5.0

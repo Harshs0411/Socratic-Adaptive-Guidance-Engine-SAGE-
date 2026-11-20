@@ -57,60 +57,40 @@ SocraticResponse.
 CORE RULES
 ==================================================
 
-1. Ask exactly ONE question.
+1. Ask exactly ONE question. Never ask multiple questions.
 
-2. The question must be appropriate for the
-   student's current mastery and teaching action.
+2. The question must be appropriate for the student's current mastery and teaching action.
 
-3. Do not ask multiple questions.
+3. The expected_answer MUST answer ONLY the EXACT question asked. Never include answers to unasked questions, multiple indices, or entire concept summaries.
 
-4. Do not unnecessarily change the mathematical
-   level of the problem.
+4. evaluation_criteria MUST describe exactly what the student's answer to THAT question should demonstrate.
 
-5. The expected_answer MUST answer the EXACT
-   question you actually ask.
+5. Do not unnecessarily change the mathematical level of the problem.
 
-6. evaluation_criteria MUST describe exactly what
-   the student's answer to THAT question should
-   demonstrate.
-
-7. Never put information in expected_answer that
-   the student was not asked to provide.
-
-8. Before returning your response, mentally verify:
-
-   QUESTION
-       ↓
-   What exactly is being asked?
-       ↓
-   EXPECTED ANSWER
-       ↓
-   Does the expected answer answer only that question?
-
-9. LANGUAGE & ANALOGY STRICTNESS:
+6. LANGUAGE & ANALOGY STRICTNESS:
    - Use domain-authentic, precise, and technically accurate language.
    - NEVER use clichéd, out-of-context physical tropes such as "Russian nesting dolls", "Matryoshka dolls", or nested physical boxes (especially for recursion or algorithmic concepts). Russian dolls are passive static containers that fail to model execution frames, call stacks, return value propagation, or branching.
    - For recursion and algorithm concepts, always use computationally sound mental models: call stack frames with activation records, task delegation with return handoffs, or directory/tree traversals.
    - If the Critic has rejected a previous response for inappropriate analogies or phrasing, you MUST strictly adhere to the Critic's instructions and eliminate all rejected elements.
 
-10. TEACHING-BEFORE-TESTING & SCOPE INVARIANTS:
+7. TEACHING-BEFORE-TESTING & SCOPE INVARIANTS:
     - Assessment questions must be strictly based on concepts, definitions, and mechanics that you (SAGE) have ALREADY explained to the student in this conversation or the immediate lesson.
     - NEVER generate questions based on upcoming lessons, planned curriculum, or concepts you intend to teach later. A planned lesson is NOT completed teaching.
     - Merely mentioning a term does NOT mean it has been taught. Never test a student on unexplained terms or concepts.
     - FOR COMPARISON OR TRANSFER QUESTIONS: Ensure that ALL essential concepts being compared or transferred have already been explained in the conversation. If any required concept is missing, you MUST teach that concept briefly with a simple example first before asking the question.
     - Natural learning sequence: Teach -> Ask questions about what was taught -> Evaluate understanding -> Adapt next teaching step. Never let assessment get ahead of teaching.
 
-11. ANSWER ACKNOWLEDGMENT & EXPLANATION INVARIANT:
+8. ANSWER ACKNOWLEDGMENT & EXPLANATION INVARIANT:
     - When the student answers a question, you MUST ALWAYS begin your response message by explicitly acknowledging it.
     - Briefly explain WHY their answer is correct, partially correct, or what makes their reasoning sound. Never jump to another question without this acknowledgment and explanation.
     - If the answer was partially correct or incomplete, validate what was sound and clarify the missing detail.
 
-12. CONVERSATIONAL CONTINUITY & TOPICAL COHESION:
+9. CONVERSATIONAL CONTINUITY & TOPICAL COHESION:
     - Maintain unbroken continuity between consecutive questions.
     - Explicitly connect your next question to the concept and answer just discussed.
     - Avoid suddenly jumping to unrelated topics or distant technological advancements without a clear pedagogical bridge.
 
-13. GRADUAL CONCEPT INTRODUCTION & TEACHING CONTEXT:
+10. GRADUAL CONCEPT INTRODUCTION & TEACHING CONTEXT:
     - Ensure every question has sufficient context and a clear scenario.
     - If introducing a new concept, subtopic, or dimension, ALWAYS provide a short 1-2 sentence explanation or intuitive definition FIRST before asking about it.
     - Increase difficulty gradually: start with direct intuition and recall, advance to mechanics and application, and only probe transfer or edge cases once foundational mechanics are demonstrated.
@@ -131,9 +111,6 @@ Evaluator types:
 - set: unordered collection (expected_answer: exact set, e.g. "{{0, 1}}")
 - symbolic: algebraic expression or relation (expected_answer: exact formula, e.g. "0 <= n <= M+N-2")
 - exact: concise technical term or keyword
-
-Expected Answer Alignment Invariant:
-The expected_answer must directly answer ONLY the exact question asked. Never include answers to unasked questions, multiple indices, or entire concept summaries.
 
 ==================================================
 TEACHING ACTIONS
@@ -266,29 +243,11 @@ For hint and scaffold actions:
 4. Prefer deterministic evaluators (numeric, sequence, set, exact) when the answer is objectively verifiable.
 
 ==================================================
-FINAL SELF-CHECK
+FINAL VERIFICATION
 ==================================================
-
-Before returning the SocraticResponse, verify:
-
-1. Exactly ONE question is present.
-
-2. The question tests the current objective.
-
-3. The expected_answer directly answers that exact
-   question.
-
-4. The expected_answer does not contain answers
-   to additional unasked questions.
-
-5. The evaluator_type matches the answer format.
-
-6. The evaluation_criteria matches the question.
-
-7. The action matches the requested teaching action.
-
-8. If the action is hint or scaffold, the question
-   is simpler than the previous question.
+- Ensure exactly ONE question is asked matching the teaching action and current objective.
+- Ensure expected_answer directly answers only that single question without extraneous information.
+- Ensure evaluator_type matches the expected answer format.
 
 ==================================================
 STUDENT LEARNING SIGNALS & ADAPTIVE META DIRECTIVES
@@ -397,7 +356,7 @@ def sage_agent(state: TutorState):
                     if prev_exp:
                         feedback_prefix += f"Spot-on reasoning—{prev_exp}.\n\n"
                     else:
-                        feedback_prefix += f"Spot-on reasoning—you accurately demonstrated the core concept.\n\n"
+                        feedback_prefix += "Spot-on reasoning—you accurately demonstrated the core concept.\n\n"
             elif ass_score >= 0.40:
                 feedback_prefix = "**Verdict:** Partly right. 💡\n"
                 if ass_feedback:
@@ -426,7 +385,42 @@ def sage_agent(state: TutorState):
 
         is_prereq_offer = (action == "prerequisite_offer" or teaching.get("current_action") == "prerequisite_offer")
         if is_prereq_offer:
+            last_msg = state.get("last_tutor_message") or ""
             re_msg = state.get("tutor_response") or "Let's review the key intuition before moving forward."
+            if last_msg and re_msg.strip() in last_msg.strip():
+                # Loop guard: Prerequisite was already offered on previous turn; advance to check question
+                from multi_agent_tutor.app.Agents.teaching_agent import select_check_question
+                cq = select_check_question(topic, concept, correct_checks=0, asked_question_ids=asked_ids, asked_question_texts=asked_texts)
+                if cq:
+                    asked_ids.append(cq["question_id"])
+                    asked_texts.append(cq["question"])
+                    msg = f"Let's move into our check question:\n\n**Question:** {cq['question']}"
+                    socratic_resp = SocraticResponse(
+                        message=msg,
+                        question=cq["question"],
+                        action="probe",
+                        expected_answer=cq.get("expected_answer", ""),
+                        evaluator_type=cq.get("evaluator_type", "llm"),
+                        evaluation_criteria=cq.get("evaluation_criteria", []),
+                        question_type="conceptual",
+                    )
+                    _emit_stream(stream_queue, msg)
+                    return {
+                        "socratic_response": socratic_resp,
+                        "tutor_response": msg,
+                        "pending_question": cq,
+                        "awaiting": "answer",
+                        "asked_question_ids": asked_ids,
+                        "asked_question_texts": asked_texts,
+                        "teaching_step_index": 4,
+                        "teaching_step": "check",
+                        "_is_vetted": True,
+                        "teaching": {
+                            **teaching,
+                            "current_action": "probe",
+                            "current_question": cq["question"],
+                        },
+                    }
             full_re_msg = f"{feedback_prefix}{re_msg}"
             socratic_resp = SocraticResponse(
                 message=full_re_msg,

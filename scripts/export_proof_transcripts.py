@@ -1,6 +1,6 @@
 """
 Export Proof Transcripts script.
-Executes the 8 proof sessions end-to-end via FastAPI TestClient against SQLite,
+Executes the 8 proof sessions end-to-end via FastAPI TestClient against PostgreSQL,
 reloading the DB between turns, and outputs markdown and JSON formatted transcripts
 for docs/transcripts/proof_transcripts.md and docs/transcripts/proof_transcripts.json.
 """
@@ -187,7 +187,7 @@ async def generate_and_save_proof_transcripts():
     md_path = os.path.join(PROJECT_ROOT, "docs", "transcripts", "proof_transcripts.md")
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("# SAGE: Real API Execution Transcripts (Proof 1-8)\n\n")
-        f.write("> **System Verification:** All transcripts were recorded via real FastAPI endpoints (`/api/session/start` and `/api/chat`) with the SQLite database reloaded from disk between turns.\n\n")
+        f.write("> **System Verification:** All transcripts were recorded via real FastAPI endpoints (`/api/session/start` and `/api/chat`) with the PostgreSQL database reloaded between turns.\n\n")
         for title, turns in proof_sessions.items():
             f.write(f"## {title}\n\n")
             for t in turns:

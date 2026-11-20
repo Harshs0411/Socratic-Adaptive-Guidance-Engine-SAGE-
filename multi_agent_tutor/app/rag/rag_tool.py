@@ -1,7 +1,7 @@
 import os
 import re
 import time
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from multi_agent_tutor.app.rag.vector_store import (
     search_knowledge,
     has_uploaded_documents,

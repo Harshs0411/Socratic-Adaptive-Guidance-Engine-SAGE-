@@ -6,7 +6,10 @@ import time
 import json
 import asyncio
 import warnings
+import logging
 from typing import Dict, Any, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
@@ -20,7 +23,7 @@ load_dotenv(find_dotenv())
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -410,7 +413,7 @@ async def start_session(req: StartSessionRequest):
             "student_input": None,
             "curriculum": reusable_curriculum,
             "diagnostic_state": {
-                "completed": bool(reusable_curriculum is not None),
+                "completed": False,
                 "questions": [],
                 "current_question_id": None,
                 "answers": {},
@@ -524,7 +527,7 @@ async def start_session(req: StartSessionRequest):
             if cache_key not in curr_cache:
                 curr_cache[cache_key] = [CurriculumConcept(**c) if isinstance(c, dict) else c for c in curriculum]
 
-        # Persist new session transactionally to PostgreSQL / SQLite
+        # Persist new session transactionally to PostgreSQL
         await SessionRepository.create_session(
             session_id=session_id,
             student_id=student_id,
@@ -552,18 +555,34 @@ async def start_session(req: StartSessionRequest):
         }
 
 
+_STREAM_SENTINEL = object()
+
+
 class StreamingTokenQueue(asyncio.Queue):
-    """Async queue that tracks the cumulative count of tokens pushed."""
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    """
+    Bounded async queue supporting backpressure, token tracking, and overflow safety.
+    """
+    def __init__(self, maxsize: int = 512, *args, **kwargs):
+        super().__init__(maxsize=maxsize, *args, **kwargs)
         self.tokens_emitted = 0
 
     def put_nowait(self, item):
-        self.tokens_emitted += 1
-        super().put_nowait(item)
+        if item is not _STREAM_SENTINEL:
+            self.tokens_emitted += 1
+        try:
+            super().put_nowait(item)
+        except asyncio.QueueFull:
+            # Enforce bounded buffer: if consumer is stalled and synchronous code pushes,
+            # evict oldest unconsumed chunk to bound memory while avoiding QueueFull crashes.
+            try:
+                self.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            super().put_nowait(item)
 
     async def put(self, item):
-        self.tokens_emitted += 1
+        if item is not _STREAM_SENTINEL:
+            self.tokens_emitted += 1
         await super().put(item)
 
 
@@ -804,7 +823,7 @@ async def _finalize_turn_payload(
     is_diag = not updated_state.get("diagnostic_state", {}).get("completed", False)
     phase = "graduated" if is_graduated else ("diagnostic" if is_diag else "teaching")
 
-    # Persist updated turn transactionally to PostgreSQL / SQLite
+    # Persist updated turn transactionally to PostgreSQL
     await SessionRepository.update_session_turn(
         session_id=session_id,
         updated_state=updated_state,
@@ -867,45 +886,81 @@ async def handle_chat(req: ChatRequest, request: Request = None):
     wants_stream = req.stream is True or (req.stream is not False and "text/event-stream" in accept_header)
 
     if wants_stream:
-        stream_queue = StreamingTokenQueue()
+        stream_queue = StreamingTokenQueue(maxsize=512)
 
         async def run_turn():
-            updated_state = await _process_chat_turn(state, user_msg, stream_queue)
-            asst_msg, final_payload = await _finalize_turn_payload(
-                session_id=req.session_id,
-                user_msg=user_msg,
-                user_msg_obj=user_msg_obj,
-                state=state,
-                updated_state=updated_state,
-                chat_history=chat_history,
-                bkt_history=bkt_history,
-                t0=t0,
-            )
-            return final_payload
+            try:
+                updated_state = await _process_chat_turn(state, user_msg, stream_queue)
+                asst_msg, final_payload = await _finalize_turn_payload(
+                    session_id=req.session_id,
+                    user_msg=user_msg,
+                    user_msg_obj=user_msg_obj,
+                    state=state,
+                    updated_state=updated_state,
+                    chat_history=chat_history,
+                    bkt_history=bkt_history,
+                    t0=t0,
+                )
+                return final_payload
+            finally:
+                # Ensure sentinel is always dispatched so consumer unblocks immediately
+                stream_queue.put_nowait(_STREAM_SENTINEL)
 
         turn_task = asyncio.create_task(run_turn())
 
         async def sse_event_stream():
             try:
                 while True:
+                    # 1. Proactive client disconnect check
+                    if request is not None and hasattr(request, "is_disconnected"):
+                        try:
+                            if await request.is_disconnected():
+                                logger.info("Client disconnected during SSE stream (proactive check).")
+                                break
+                        except Exception:
+                            pass
+
+                    # 2. Wait for next token or end sentinel with a keep-alive timeout
                     try:
-                        token = await asyncio.wait_for(stream_queue.get(), timeout=0.03)
-                        yield f"event: token\ndata: {json.dumps({'delta': token, 'token': token})}\n\n"
-                        if not stream_queue.empty():
-                            await asyncio.sleep(0.012)
+                        token = await asyncio.wait_for(stream_queue.get(), timeout=15.0)
                     except asyncio.TimeoutError:
                         if turn_task.done():
-                            if stream_queue.empty():
-                                break
-                            continue
+                            break
+                        # Emit SSE comment to keep TCP connection alive through proxies/ALBs
+                        yield ": ping\n\n"
+                        continue
+
+                    if token is _STREAM_SENTINEL:
+                        break
+
+                    yield f"event: token\ndata: {json.dumps({'delta': token, 'token': token})}\n\n"
+                    if not stream_queue.empty():
+                        await asyncio.sleep(0.012)
+
+                # 3. Propagate any exception from turn_task
+                if turn_task.done():
+                    exc = turn_task.exception()
+                    if exc:
+                        raise exc
 
                 final_payload = await turn_task
                 yield f"event: done\ndata: {json.dumps(final_payload)}\n\n"
+
             except asyncio.CancelledError:
-                # Client disconnected mid-stream
-                pass
+                # Client disconnected mid-stream; Starlette cancels generator
+                logger.info("Client disconnected mid-stream (CancelledError caught).")
             except Exception as exc:
+                logger.error(f"SSE stream error: {exc}", exc_info=True)
                 yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
+            finally:
+                # 4. Cancel background turn task if client disconnected or stream ended early
+                if not turn_task.done():
+                    logger.info("Cancelling orphaned turn_task due to stream closure.")
+                    turn_task.cancel()
+                    try:
+                        await turn_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
 
         return StreamingResponse(
             sse_event_stream(),
@@ -1196,7 +1251,7 @@ async def drilldown_concept(req: DrilldownRequest):
 
 @app.post("/api/session/reset")
 async def reset_session(req: ResetSessionRequest):
-    deleted = await SessionRepository.delete_session(req.session_id)
+    await SessionRepository.delete_session(req.session_id)
     return {"success": True, "message": f"Session {req.session_id} reset."}
 
 

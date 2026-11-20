@@ -1,16 +1,24 @@
 """
 Repository Layer for SAGE Learning Sessions.
-Handles asynchronous CRUD operations, transaction boundaries,
-and bi-directional serialization between LangGraph Pydantic state and PostgreSQL JSONB.
+PostgreSQL-optimized persistence engine with normalized relational entities,
+instant O(1) curriculum reuse, aggregated message counting, and robust LangGraph state rehydration.
 """
 
-from typing import Optional, Dict, Any, List
 import logging
-from sqlalchemy import select, delete, desc
+from typing import Optional, Dict, Any, List
+from sqlalchemy import select, desc, func
 from sqlalchemy.orm import selectinload
 
 from multi_agent_tutor.db.database import get_db_session
-from multi_agent_tutor.db.models import LearningSessionModel, ChatMessageModel, BKTLogModel
+from multi_agent_tutor.db.models import (
+    StudentModel,
+    CurriculumModel,
+    LearningSessionModel,
+    SessionStateModel,
+    ConceptMasteryModel,
+    ChatMessageModel,
+    BKTLogModel,
+)
 
 from multi_agent_tutor.app.schemas.curriculum import CurriculumConcept
 from multi_agent_tutor.app.schemas.diagnostic import DiagnosticQuestion
@@ -36,7 +44,7 @@ def serialize_for_storage(obj: Any) -> Any:
         return serialize_for_storage(obj.dict())
     if isinstance(obj, dict):
         return {k: serialize_for_storage(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
+    if isinstance(obj, (list, tuple, set)):
         return [serialize_for_storage(item) for item in obj]
     return obj
 
@@ -48,7 +56,7 @@ def rehydrate_state(raw_state: Dict[str, Any]) -> Dict[str, Any]:
 
     state = dict(raw_state)
 
-    # Rehydrate Curriculum
+    # 1. Rehydrate Curriculum
     if "curriculum" in state and state["curriculum"]:
         rehydrated_c = []
         for c in state["curriculum"]:
@@ -59,7 +67,7 @@ def rehydrate_state(raw_state: Dict[str, Any]) -> Dict[str, Any]:
                 rehydrated_c.append(c)
         state["curriculum"] = rehydrated_c
 
-    # Rehydrate Diagnostic State
+    # 2. Rehydrate Diagnostic State
     diag = state.get("diagnostic_state")
     if isinstance(diag, dict):
         diag_copy = dict(diag)
@@ -82,7 +90,7 @@ def rehydrate_state(raw_state: Dict[str, Any]) -> Dict[str, Any]:
             diag_copy["assessments"] = rehydrated_a
         state["diagnostic_state"] = diag_copy
 
-    # Rehydrate Learner Profile
+    # 3. Rehydrate Learner Profile
     prof = state.get("learner_profile")
     if isinstance(prof, dict):
         try:
@@ -90,7 +98,7 @@ def rehydrate_state(raw_state: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Rehydrate Learning Path
+    # 4. Rehydrate Learning Path
     lp = state.get("learning_path")
     if isinstance(lp, dict):
         try:
@@ -98,7 +106,7 @@ def rehydrate_state(raw_state: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Rehydrate Teaching Assessment
+    # 5. Rehydrate Teaching Assessment
     ass = state.get("teaching_assessment")
     if isinstance(ass, dict):
         try:
@@ -106,7 +114,7 @@ def rehydrate_state(raw_state: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Rehydrate Teaching Decision
+    # 6. Rehydrate Teaching Decision
     dec = state.get("teaching_decision")
     if isinstance(dec, dict):
         try:
@@ -114,7 +122,7 @@ def rehydrate_state(raw_state: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Rehydrate Socratic Response
+    # 7. Rehydrate Socratic Response
     resp = state.get("socratic_response")
     if isinstance(resp, dict):
         try:
@@ -122,7 +130,7 @@ def rehydrate_state(raw_state: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Rehydrate Critic Result
+    # 8. Rehydrate Critic Result
     crit = state.get("critic_result")
     if isinstance(crit, dict):
         try:
@@ -130,7 +138,7 @@ def rehydrate_state(raw_state: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Rehydrate BKT States
+    # 9. Rehydrate BKT States
     bkt_states = state.get("bkt_states")
     if isinstance(bkt_states, dict):
         rehydrated_bkt = {}
@@ -144,7 +152,7 @@ def rehydrate_state(raw_state: Dict[str, Any]) -> Dict[str, Any]:
                 rehydrated_bkt[cid] = b
         state["bkt_states"] = rehydrated_bkt
 
-    # Rehydrate extended pedagogical fields: load stored values, default ONLY if missing (legacy sessions)
+    # 10. Rehydrate Pedagogical Mode & Doubt Fields
     if "doubt_state" in raw_state and isinstance(raw_state["doubt_state"], dict):
         state["doubt_state"] = raw_state["doubt_state"]
     else:
@@ -162,13 +170,11 @@ def rehydrate_state(raw_state: Dict[str, Any]) -> Dict[str, Any]:
         current_q = state.get("teaching", {}).get("current_question") if isinstance(state.get("teaching"), dict) else None
         state["pending_question"] = {"question": current_q} if current_q else None
 
-    # Fix 1: Explicit awaiting state (answer, clarity_check, continue, none)
     if "awaiting" in raw_state:
         state["awaiting"] = raw_state["awaiting"]
     else:
         state["awaiting"] = "clarity_check" if state.get("doubt_state", {}).get("pending_clarity_check") else ("answer" if state.get("pending_question") else "none")
 
-    # Fix 3: Mode 2 teaching step chunk index (0: concept+analogy, 1: ex1, 2: ex2, 3: figure, 4: checks)
     state["teaching_step_index"] = raw_state.get("teaching_step_index", 0) or 0
     state["last_tutor_message"] = raw_state.get("last_tutor_message")
     state["debug_trace"] = raw_state.get("debug_trace", [])
@@ -195,47 +201,16 @@ def rehydrate_state(raw_state: Dict[str, Any]) -> Dict[str, Any]:
     else:
         state["teaching_step"] = "check" if state.get("teaching_mode") == "mode_1_qa" else "teach"
 
-    if "current_subtopic" in raw_state:
-        state["current_subtopic"] = raw_state["current_subtopic"]
-    else:
-        state["current_subtopic"] = None
+    state["current_subtopic"] = raw_state.get("current_subtopic")
+    state["subtopic_mastery"] = raw_state.get("subtopic_mastery", {})
+    state["detected_intent"] = raw_state.get("detected_intent")
+    state["misconceptions_log"] = raw_state.get("misconceptions_log", [])
+    state["signals"] = raw_state.get("signals", {"hints_used": 0, "attempts": 0, "response_time": 0.0, "stated_confidence": None})
+    state["last_practice_time"] = raw_state.get("last_practice_time")
+    state["study_plan"] = raw_state.get("study_plan")
+    state["skipped_concepts"] = raw_state.get("skipped_concepts", [])
 
-    if "subtopic_mastery" in raw_state:
-        state["subtopic_mastery"] = raw_state["subtopic_mastery"]
-    else:
-        state["subtopic_mastery"] = {}
-
-    if "detected_intent" in raw_state:
-        state["detected_intent"] = raw_state["detected_intent"]
-    else:
-        state["detected_intent"] = None
-
-    if "misconceptions_log" in raw_state:
-        state["misconceptions_log"] = raw_state["misconceptions_log"]
-    else:
-        state["misconceptions_log"] = []
-
-    if "signals" in raw_state:
-        state["signals"] = raw_state["signals"]
-    else:
-        state["signals"] = {"hints_used": 0, "attempts": 0, "response_time": 0.0, "stated_confidence": None}
-
-    if "last_practice_time" in raw_state:
-        state["last_practice_time"] = raw_state["last_practice_time"]
-    else:
-        state["last_practice_time"] = None
-
-    if "study_plan" in raw_state:
-        state["study_plan"] = raw_state["study_plan"]
-    else:
-        state["study_plan"] = None
-
-    if "skipped_concepts" in raw_state:
-        state["skipped_concepts"] = raw_state["skipped_concepts"]
-    else:
-        state["skipped_concepts"] = []
-
-    # FIX A, B, G, H: Topic isolation, Question queue, Review queue, Transitions
+    # Topic isolation, Question queue, Review queue, Transitions
     state["curriculum_id"] = raw_state.get("curriculum_id")
     state["asked_question_ids"] = list(raw_state.get("asked_question_ids", []))
     state["asked_question_texts"] = list(raw_state.get("asked_question_texts", []))
@@ -250,7 +225,7 @@ def rehydrate_state(raw_state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class SessionRepository:
-    """Enterprise-grade async repository managing SAGE persistent learning sessions."""
+    """Enterprise-grade async repository managing SAGE persistent learning sessions on PostgreSQL."""
 
     @staticmethod
     async def create_session(
@@ -262,40 +237,96 @@ class SessionRepository:
         bkt_history: List[Dict[str, Any]],
     ) -> LearningSessionModel:
         """Saves a newly initialized learning session with its first diagnostic message."""
+        from multi_agent_tutor.app.Agents.curriculum_generator import normalize_topic_name
+
         async with get_db_session() as session:
-            serialized_curriculum = serialize_for_storage(state.get("curriculum"))
-            serialized_state = serialize_for_storage(state)
+            # 1. Ensure Student Record exists
+            st_stmt = select(StudentModel).where(StudentModel.student_id == student_id)
+            existing_student = (await session.execute(st_stmt)).scalar_one_or_none()
+            if not existing_student:
+                student_record = StudentModel(student_id=student_id)
+                session.add(student_record)
+                await session.flush()
+
+            # 2. Check / Persist Reusable Curriculum
+            curriculum_id: Optional[str] = None
+            curr_data = state.get("curriculum")
+            if curr_data:
+                norm_topic = normalize_topic_name(topic)
+                c_stmt = select(CurriculumModel).where(CurriculumModel.normalized_topic == norm_topic)
+                curr_model = (await session.execute(c_stmt)).scalar_one_or_none()
+                if not curr_model:
+                    c_id = f"curr_{norm_topic}"
+                    curr_model = CurriculumModel(
+                        id=c_id,
+                        topic=topic,
+                        normalized_topic=norm_topic,
+                        concepts_dag=serialize_for_storage(curr_data),
+                    )
+                    session.add(curr_model)
+                    await session.flush()
+                curriculum_id = curr_model.id
+
+            # 3. Create Session Record
+            diag_completed = state.get("diagnostic_state", {}).get("completed", False) if isinstance(state.get("diagnostic_state"), dict) else False
+            phase = "teaching" if diag_completed else "diagnostic"
 
             db_session = LearningSessionModel(
                 session_id=session_id,
                 student_id=student_id,
+                curriculum_id=curriculum_id,
                 topic=topic,
-                phase="diagnostic" if not state.get("diagnostic_state", {}).get("completed") else "teaching",
+                phase=phase,
                 current_concept=state.get("current_concept"),
+                current_subtopic=state.get("current_subtopic"),
                 is_graduated=False,
                 hake_gain=None,
                 assessment_done=state.get("assessment_done", False),
                 self_reported_level=state.get("self_reported_level"),
                 teaching_mode=state.get("teaching_mode", "mode_2_teach_first"),
                 teaching_step=state.get("teaching_step", "teach"),
-                current_subtopic=state.get("current_subtopic"),
+                teaching_step_index=state.get("teaching_step_index", 0),
+                awaiting=state.get("awaiting", "none"),
+                last_tutor_message=state.get("last_tutor_message"),
+                version_id=1,
+            )
+            session.add(db_session)
+
+            # 4. Create Session State Record (for LangGraph resumption)
+            state_record = SessionStateModel(
+                session_id=session_id,
+                state_payload=serialize_for_storage(state),
                 doubt_state=serialize_for_storage(state.get("doubt_state")),
                 pending_question=serialize_for_storage(state.get("pending_question")),
-                awaiting=state.get("awaiting", "none"),
-                teaching_step_index=state.get("teaching_step_index", 0),
-                last_tutor_message=state.get("last_tutor_message"),
                 subtopic_mastery=serialize_for_storage(state.get("subtopic_mastery")),
                 misconceptions_log=serialize_for_storage(state.get("misconceptions_log")),
                 signals=serialize_for_storage(state.get("signals")),
                 study_plan=serialize_for_storage(state.get("study_plan")),
-                curriculum_data=serialized_curriculum,
-                mastery_map=state.get("mastery", {}),
-                bkt_history=bkt_history,
-                state_snapshot=serialized_state,
             )
-            session.add(db_session)
+            session.add(state_record)
 
-            # Add initial greeting/diagnostic message
+            # 5. Populate Initial Concept Mastery
+            mastery_dict = state.get("mastery", {})
+            bkt_states_dict = state.get("bkt_states", {})
+            for c_id, p_know in mastery_dict.items():
+                bkt_obj = bkt_states_dict.get(c_id)
+                pt = getattr(bkt_obj, "p_transit", 0.15) if bkt_obj else 0.15
+                pg = getattr(bkt_obj, "p_guess", 0.20) if bkt_obj else 0.20
+                ps = getattr(bkt_obj, "p_slip", 0.10) if bkt_obj else 0.10
+                conf = getattr(bkt_obj, "confidence", None) if bkt_obj else None
+                cm = ConceptMasteryModel(
+                    session_id=session_id,
+                    concept_id=c_id,
+                    concept_name=c_id.replace("_", " ").title(),
+                    p_mastery=float(p_know),
+                    p_transit=float(pt),
+                    p_guess=float(pg),
+                    p_slip=float(ps),
+                    confidence=float(conf) if conf is not None else None,
+                )
+                session.add(cm)
+
+            # 6. Add Initial Greeting/Diagnostic Message
             db_msg = ChatMessageModel(
                 id=initial_message.get("id", f"msg_{session_id}_0"),
                 session_id=session_id,
@@ -307,17 +338,36 @@ class SessionRepository:
                 rag_citations=serialize_for_storage(initial_message.get("rag_context")),
             )
             session.add(db_msg)
+
+            # 7. Add Initial BKT Log if provided
+            if bkt_history:
+                for b_entry in bkt_history:
+                    bkt_log = BKTLogModel(
+                        session_id=session_id,
+                        concept_id=b_entry.get("concept_id", "initial"),
+                        concept_name=b_entry.get("concept_name", "Initial Assessment"),
+                        p_mastery=float(b_entry.get("p_mastery", 0.0)),
+                        action=b_entry.get("action", "diagnostic"),
+                    )
+                    session.add(bkt_log)
+
             await session.flush()
-            logger.info(f"💾 Persisted new session '{session_id}' for topic '{topic}' to database.")
+            logger.info(f"💾 Persisted new PostgreSQL session '{session_id}' for topic '{topic}'.")
             return db_session
 
     @staticmethod
     async def get_session(session_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieves a full session with complete message history and rehydrated state."""
+        """Retrieves a full session with complete message history, concept mastery, and rehydrated state."""
         async with get_db_session() as session:
             stmt = (
                 select(LearningSessionModel)
-                .options(selectinload(LearningSessionModel.messages))
+                .options(
+                    selectinload(LearningSessionModel.curriculum),
+                    selectinload(LearningSessionModel.state_record),
+                    selectinload(LearningSessionModel.concept_masteries),
+                    selectinload(LearningSessionModel.messages),
+                    selectinload(LearningSessionModel.bkt_logs),
+                )
                 .where(LearningSessionModel.session_id == session_id)
             )
             result = await session.execute(stmt)
@@ -340,12 +390,41 @@ class SessionRepository:
                 for m in db_sess.messages
             ]
 
-            rehydrated = rehydrate_state(db_sess.state_snapshot or {})
+            bkt_history = [
+                {
+                    "concept_id": b.concept_id,
+                    "concept_name": b.concept_name,
+                    "p_mastery": b.p_mastery,
+                    "action": b.action,
+                    "created_at": b.created_at.isoformat() if b.created_at else None,
+                }
+                for b in db_sess.bkt_logs
+            ]
+
+            mastery_map = {
+                cm.concept_id: cm.p_mastery for cm in db_sess.concept_masteries
+            }
+
+            # State payload rehydration
+            state_data = db_sess.state_record.state_payload if db_sess.state_record else {}
+            rehydrated = rehydrate_state(state_data)
+
+            # Ensure curriculum is populated from authoritative curriculum relation if missing in snapshot
+            if db_sess.curriculum and (not rehydrated.get("curriculum") or len(rehydrated.get("curriculum", [])) == 0):
+                rehydrated["curriculum"] = [
+                    CurriculumConcept(**c) if isinstance(c, dict) else c
+                    for c in db_sess.curriculum.concepts_dag
+                ]
+
             if db_sess.topic:
                 if not rehydrated.get("target_topic"):
                     rehydrated["target_topic"] = db_sess.topic
                 if not rehydrated.get("curriculum_id"):
                     rehydrated["curriculum_id"] = db_sess.topic.lower().replace(" ", "_")
+
+            # Ensure mastery in rehydrated state matches authoritative concept_masteries
+            if mastery_map:
+                rehydrated["mastery"] = dict(mastery_map)
 
             return {
                 "session_id": db_sess.session_id,
@@ -357,8 +436,8 @@ class SessionRepository:
                 "hake_gain": db_sess.hake_gain,
                 "state": rehydrated,
                 "chat_history": chat_history,
-                "bkt_history": db_sess.bkt_history or [],
-                "mastery": db_sess.mastery_map or {},
+                "bkt_history": bkt_history,
+                "mastery": mastery_map,
             }
 
     @staticmethod
@@ -370,9 +449,16 @@ class SessionRepository:
         is_graduated: bool = False,
         hake_gain: Optional[float] = None,
     ) -> None:
-        """Appends new messages and updates the state snapshot transactionally."""
+        """Appends new messages and updates state and mastery transactionally with optimistic locking."""
         async with get_db_session() as session:
-            stmt = select(LearningSessionModel).where(LearningSessionModel.session_id == session_id)
+            stmt = (
+                select(LearningSessionModel)
+                .options(
+                    selectinload(LearningSessionModel.state_record),
+                    selectinload(LearningSessionModel.concept_masteries),
+                )
+                .where(LearningSessionModel.session_id == session_id)
+            )
             result = await session.execute(stmt)
             db_sess = result.scalar_one_or_none()
 
@@ -380,11 +466,12 @@ class SessionRepository:
                 raise ValueError(f"Session {session_id} not found in database.")
 
             # Update session attributes
-            diag_completed = updated_state.get("diagnostic_state", {}).get("completed", False)
+            diag_completed = updated_state.get("diagnostic_state", {}).get("completed", False) if isinstance(updated_state.get("diagnostic_state"), dict) else False
             phase = "graduated" if is_graduated else ("teaching" if diag_completed else "diagnostic")
 
             db_sess.phase = phase
             db_sess.current_concept = updated_state.get("current_concept")
+            db_sess.current_subtopic = updated_state.get("current_subtopic")
             db_sess.is_graduated = is_graduated
             if hake_gain is not None:
                 db_sess.hake_gain = hake_gain
@@ -392,21 +479,61 @@ class SessionRepository:
             db_sess.self_reported_level = updated_state.get("self_reported_level")
             db_sess.teaching_mode = updated_state.get("teaching_mode", "mode_2_teach_first")
             db_sess.teaching_step = updated_state.get("teaching_step", "teach")
-            db_sess.current_subtopic = updated_state.get("current_subtopic")
-            db_sess.doubt_state = serialize_for_storage(updated_state.get("doubt_state"))
-            db_sess.pending_question = serialize_for_storage(updated_state.get("pending_question"))
-            db_sess.awaiting = updated_state.get("awaiting", "none")
             db_sess.teaching_step_index = updated_state.get("teaching_step_index", 0)
+            db_sess.awaiting = updated_state.get("awaiting", "none")
             db_sess.last_tutor_message = updated_state.get("last_tutor_message")
-            db_sess.subtopic_mastery = serialize_for_storage(updated_state.get("subtopic_mastery"))
-            db_sess.misconceptions_log = serialize_for_storage(updated_state.get("misconceptions_log"))
-            db_sess.signals = serialize_for_storage(updated_state.get("signals"))
-            db_sess.study_plan = serialize_for_storage(updated_state.get("study_plan"))
-            db_sess.mastery_map = updated_state.get("mastery", {})
-            db_sess.bkt_history = bkt_history
-            db_sess.state_snapshot = serialize_for_storage(updated_state)
+            db_sess.version_id += 1
 
-            # Append new messages
+            # Update or create session_states record
+            if not db_sess.state_record:
+                db_sess.state_record = SessionStateModel(
+                    session_id=session_id,
+                    state_payload=serialize_for_storage(updated_state),
+                )
+                session.add(db_sess.state_record)
+
+            db_sess.state_record.state_payload = serialize_for_storage(updated_state)
+            db_sess.state_record.doubt_state = serialize_for_storage(updated_state.get("doubt_state"))
+            db_sess.state_record.pending_question = serialize_for_storage(updated_state.get("pending_question"))
+            db_sess.state_record.subtopic_mastery = serialize_for_storage(updated_state.get("subtopic_mastery"))
+            db_sess.state_record.misconceptions_log = serialize_for_storage(updated_state.get("misconceptions_log"))
+            db_sess.state_record.signals = serialize_for_storage(updated_state.get("signals"))
+            db_sess.state_record.study_plan = serialize_for_storage(updated_state.get("study_plan"))
+
+            # Upsert Authoritative Concept Mastery
+            mastery_dict = updated_state.get("mastery", {})
+            bkt_states_dict = updated_state.get("bkt_states", {})
+            existing_masteries = {cm.concept_id: cm for cm in db_sess.concept_masteries}
+
+            for c_id, p_know in mastery_dict.items():
+                bkt_obj = bkt_states_dict.get(c_id)
+                pt = getattr(bkt_obj, "p_transit", 0.15) if bkt_obj else 0.15
+                pg = getattr(bkt_obj, "p_guess", 0.20) if bkt_obj else 0.20
+                ps = getattr(bkt_obj, "p_slip", 0.10) if bkt_obj else 0.10
+                conf = getattr(bkt_obj, "confidence", None) if bkt_obj else None
+
+                if c_id in existing_masteries:
+                    cm = existing_masteries[c_id]
+                    cm.p_mastery = float(p_know)
+                    cm.p_transit = float(pt)
+                    cm.p_guess = float(pg)
+                    cm.p_slip = float(ps)
+                    if conf is not None:
+                        cm.confidence = float(conf)
+                else:
+                    cm = ConceptMasteryModel(
+                        session_id=session_id,
+                        concept_id=c_id,
+                        concept_name=c_id.replace("_", " ").title(),
+                        p_mastery=float(p_know),
+                        p_transit=float(pt),
+                        p_guess=float(pg),
+                        p_slip=float(ps),
+                        confidence=float(conf) if conf is not None else None,
+                    )
+                    session.add(cm)
+
+            # Append New Messages
             for msg in new_messages:
                 db_msg = ChatMessageModel(
                     id=msg.get("id"),
@@ -420,25 +547,25 @@ class SessionRepository:
                 )
                 session.add(db_msg)
 
-            # Log concept BKT mastery point
+            # Log Concept BKT Mastery Point
             c_id = updated_state.get("current_concept")
-            if c_id and db_sess.mastery_map:
-                p_know = db_sess.mastery_map.get(c_id, 0.0)
+            if c_id and mastery_dict:
+                p_know = mastery_dict.get(c_id, 0.0)
                 bkt_log = BKTLogModel(
                     session_id=session_id,
                     concept_id=c_id,
                     concept_name=c_id.replace("_", " ").title(),
-                    p_mastery=p_know,
-                    action=new_messages[-1].get("action", "unknown") if new_messages else "turn",
+                    p_mastery=float(p_know),
+                    action=new_messages[-1].get("action", "turn") if new_messages else "turn",
                 )
                 session.add(bkt_log)
 
             await session.flush()
-            logger.debug(f"💾 Updated session '{session_id}' in database.")
+            logger.debug(f"💾 Updated PostgreSQL session '{session_id}' in database.")
 
     @staticmethod
     async def delete_session(session_id: str) -> bool:
-        """Deletes session and all associated messages and logs."""
+        """Deletes session and all associated records (cascaded via foreign keys)."""
         async with get_db_session() as session:
             stmt = select(LearningSessionModel).where(LearningSessionModel.session_id == session_id)
             result = await session.execute(stmt)
@@ -450,16 +577,32 @@ class SessionRepository:
 
     @staticmethod
     async def list_student_sessions(student_id: str) -> List[Dict[str, Any]]:
-        """Lists all previous sessions for a given student to support learning journey continuation."""
+        """
+        Lists previous sessions for a student with high performance.
+        Uses SQL aggregation for message counts; avoids loading full chat bodies into RAM.
+        """
         async with get_db_session() as session:
+            msg_subq = (
+                select(
+                    ChatMessageModel.session_id,
+                    func.count(ChatMessageModel.id).label("message_count"),
+                )
+                .group_by(ChatMessageModel.session_id)
+                .subquery()
+            )
+
             stmt = (
-                select(LearningSessionModel)
-                .options(selectinload(LearningSessionModel.messages))
+                select(
+                    LearningSessionModel,
+                    func.coalesce(msg_subq.c.message_count, 0).label("message_count"),
+                )
+                .outerjoin(msg_subq, LearningSessionModel.session_id == msg_subq.c.session_id)
                 .where(LearningSessionModel.student_id == student_id)
                 .order_by(desc(LearningSessionModel.updated_at))
             )
+
             result = await session.execute(stmt)
-            sessions = result.scalars().all()
+            rows = result.all()
 
             return [
                 {
@@ -469,26 +612,28 @@ class SessionRepository:
                     "current_concept": s.current_concept,
                     "is_graduated": s.is_graduated,
                     "hake_gain": s.hake_gain,
-                    "message_count": len(s.messages),
+                    "message_count": int(count),
                     "created_at": s.created_at.isoformat() if s.created_at else None,
                     "updated_at": s.updated_at.isoformat() if s.updated_at else None,
                 }
-                for s in sessions
+                for s, count in rows
             ]
 
     @staticmethod
     async def find_active_session(student_id: str, norm_topic: str) -> Optional[Dict[str, Any]]:
         """
-        Finds the active (not graduated) learning session for a student and normalized topic.
-        If multiple exist from legacy runs, selects the one with the most learning progress
-        (highest message count / latest activity).
+        Finds active (not graduated) learning session for a student and normalized topic.
+        Optimized to pick the session with the most learning progress.
         """
         from multi_agent_tutor.app.Agents.curriculum_generator import normalize_topic_name
+
         async with get_db_session() as session:
             stmt = (
                 select(LearningSessionModel)
-                .options(selectinload(LearningSessionModel.messages))
-                .where(LearningSessionModel.student_id == student_id)
+                .where(
+                    LearningSessionModel.student_id == student_id,
+                    LearningSessionModel.is_graduated == False,  # noqa: E712
+                )
                 .order_by(desc(LearningSessionModel.updated_at))
             )
             result = await session.execute(stmt)
@@ -496,27 +641,49 @@ class SessionRepository:
 
             matching = [
                 s for s in sessions
-                if normalize_topic_name(s.topic) == norm_topic and not s.is_graduated
+                if normalize_topic_name(s.topic) == norm_topic
             ]
             if not matching:
                 return None
 
-            # Prefer session with messages/progress over empty stubs
-            matching.sort(key=lambda s: (len(s.messages) > 1, len(s.messages), s.updated_at or s.created_at), reverse=True)
             return await SessionRepository.get_session(matching[0].session_id)
 
     @staticmethod
     async def find_curriculum_for_topic(norm_topic: str) -> Optional[List[Dict[str, Any]]]:
-        """Searches database for any previously synthesized curriculum for this normalized topic across all sessions."""
-        from multi_agent_tutor.app.Agents.curriculum_generator import normalize_topic_name
+        """Searches curricula catalog with O(1) indexed lookup on normalized_topic."""
         async with get_db_session() as session:
             stmt = (
-                select(LearningSessionModel)
-                .where(LearningSessionModel.curriculum_data.isnot(None))
-                .order_by(desc(LearningSessionModel.updated_at))
+                select(CurriculumModel.concepts_dag)
+                .where(CurriculumModel.normalized_topic == norm_topic)
+                .limit(1)
             )
             result = await session.execute(stmt)
-            for s in result.scalars().all():
-                if normalize_topic_name(s.topic) == norm_topic and s.curriculum_data:
-                    return s.curriculum_data
+            dag = result.scalar_one_or_none()
+            if dag:
+                return dag
         return None
+
+    @staticmethod
+    async def save_curriculum(topic: str, concepts_dag: List[Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None) -> CurriculumModel:
+        """Stores or updates synthesized curriculum in the authoritative catalog."""
+        from multi_agent_tutor.app.Agents.curriculum_generator import normalize_topic_name
+
+        norm_topic = normalize_topic_name(topic)
+        async with get_db_session() as session:
+            stmt = select(CurriculumModel).where(CurriculumModel.normalized_topic == norm_topic)
+            curr = (await session.execute(stmt)).scalar_one_or_none()
+            if curr:
+                curr.concepts_dag = serialize_for_storage(concepts_dag)
+                if metadata:
+                    curr.metadata_info = serialize_for_storage(metadata)
+            else:
+                curr = CurriculumModel(
+                    id=f"curr_{norm_topic}",
+                    topic=topic,
+                    normalized_topic=norm_topic,
+                    concepts_dag=serialize_for_storage(concepts_dag),
+                    metadata_info=serialize_for_storage(metadata),
+                )
+                session.add(curr)
+            await session.flush()
+            return curr

@@ -55,7 +55,7 @@ def meta_agent_node(state: TutorState) -> Dict[str, Any]:
 
     elif subintent == "speed_up":
         msg = (
-            f"Got it! Let's pick up the momentum. "
+            "Got it! Let's pick up the momentum. "
         )
         if q_text:
             msg += f"Here is our challenge question:\n**{q_text}**"

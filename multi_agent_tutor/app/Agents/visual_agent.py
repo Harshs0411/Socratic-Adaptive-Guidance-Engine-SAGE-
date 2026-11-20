@@ -6,7 +6,7 @@ Handles:
 3. Embedding into Mode 2 explanations and REQUEST_VISUAL meta-intent responses.
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 from multi_agent_tutor.app.curriculum_loader import load_rich_curriculum
 from multi_agent_tutor.app.schemas.curriculum import VisualItem
 

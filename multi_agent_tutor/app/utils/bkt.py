@@ -1,5 +1,4 @@
 from typing import Any, Union, Dict
-from pydantic import BaseModel, Field
 from multi_agent_tutor.app.schemas.bkt import BKTState
 from multi_agent_tutor.app.config import (
     DEFAULT_P_L0,
@@ -118,8 +117,6 @@ def update_bkt(
     posterior for a correct and incorrect observation.
     """
     bkt = _ensure_bkt_state(bkt)
-
-    current_p = bkt.p_know
 
     # 1. Continuous Bayesian posterior calculation
     correct_posterior = posterior_if_correct(bkt)

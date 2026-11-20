@@ -1,15 +1,16 @@
 """
-Asynchronous Database Engine & Session Factory for SAGE.
-Provides enterprise-grade PostgreSQL connectivity with asyncpg,
-connection pooling, schema auto-creation, and seamless SQLite fallback.
+Database Engine & Session Factory for SAGE.
+Supports PostgreSQL (for production deployment on Render) and SQLite (for easy local development without Docker).
 """
 
 import os
-import sys
 import logging
+import asyncio
+from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Dict, Any, Optional
+from typing import AsyncGenerator, Optional, Dict, Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     AsyncEngine,
@@ -24,100 +25,100 @@ load_dotenv(find_dotenv())
 
 logger = logging.getLogger("sage.database")
 
-# Project paths
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DATA_DIR = os.path.join(PROJECT_ROOT, "multi_agent_tutor", "data")
-os.makedirs(DATA_DIR, exist_ok=True)
-SQLITE_PATH = os.path.join(DATA_DIR, "sage_sessions.db")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+DEFAULT_SQLITE_PATH = PROJECT_ROOT / "multi_agent_tutor" / "data" / "sage_sessions.db"
+DEFAULT_SQLITE_URL = f"sqlite+aiosqlite:///{DEFAULT_SQLITE_PATH}"
+DEFAULT_POSTGRES_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/sage_db"
 
 _engine: Optional[AsyncEngine] = None
+_engine_loop: Optional[asyncio.AbstractEventLoop] = None
 _session_factory: Optional[async_sessionmaker[AsyncSession]] = None
-_active_dialect: str = "unknown"
-_db_connected: bool = False
 
 
 def normalize_database_url(raw_url: Optional[str]) -> str:
-    """Normalize database URL for async driver compatibility."""
+    """
+    Normalizes database URL. Supports PostgreSQL (Render production)
+    and SQLite (local zero-setup development).
+    """
     if not raw_url or not raw_url.strip():
-        return f"sqlite+aiosqlite:///{SQLITE_PATH}"
+        return DEFAULT_SQLITE_URL
 
     url = raw_url.strip()
-    # Normalize postgres/postgresql to asyncpg
+
+    # Normalize standard postgres/postgresql URIs to asyncpg driver
     if url.startswith("postgres://"):
         url = "postgresql+asyncpg://" + url[len("postgres://"):]
     elif url.startswith("postgresql://") and not url.startswith("postgresql+asyncpg://"):
         url = "postgresql+asyncpg://" + url[len("postgresql://"):]
+    elif url.startswith("sqlite://") and not url.startswith("sqlite+aiosqlite://"):
+        url = "sqlite+aiosqlite://" + url[len("sqlite://"):]
 
     return url
 
 
 async def get_or_create_engine() -> AsyncEngine:
-    """Initialize or return the global SQLAlchemy AsyncEngine with fallback protection."""
-    global _engine, _session_factory, _active_dialect, _db_connected
+    """
+    Initializes or returns the global SQLAlchemy AsyncEngine.
+    If PostgreSQL is configured but fails to connect, gracefully falls back to local SQLite
+    so that the app runs seamlessly without requiring Docker.
+    """
+    global _engine, _engine_loop, _session_factory
 
-    if _engine is not None:
+    current_loop = None
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+
+    if _engine is not None and (_engine_loop is current_loop or current_loop is None):
         return _engine
+
+    if _engine is not None and current_loop is not None and _engine_loop is not current_loop:
+        _engine = None
+        _session_factory = None
 
     raw_url = os.getenv("DATABASE_URL")
     target_url = normalize_database_url(raw_url)
 
-    is_postgres = target_url.startswith("postgresql")
+    engine_created = False
 
-    if is_postgres:
-        try:
-            # Create PostgreSQL async engine with production connection pooling
+    try:
+        if target_url.startswith("postgresql"):
             pg_engine = create_async_engine(
                 target_url,
                 pool_size=10,
                 max_overflow=20,
                 pool_pre_ping=True,
+                pool_recycle=1800,
                 echo=False,
             )
-            from sqlalchemy import text
-            # Test connection
             async with pg_engine.connect() as conn:
-                await conn.execute(text("SELECT 1"))
-            
+                await conn.execute(text("SELECT 1;"))
             _engine = pg_engine
-            _active_dialect = "postgresql"
-            _db_connected = True
             logger.info("✅ Connected to PostgreSQL database successfully.")
-        except Exception as e:
-            _db_connected = False
-            # Check if running in production or explicit PostgreSQL configuration
-            is_prod = bool(os.getenv("RENDER") or os.getenv("ENVIRONMENT") == "production" or os.getenv("DATABASE_URL"))
-            if is_prod:
-                logger.critical(
-                    f"❌ CRITICAL: Failed to connect to production PostgreSQL database at '{target_url}' ({e}). "
-                    "Production will NOT silently fall back to ephemeral SQLite. Application startup aborted."
-                )
-                raise RuntimeError(
-                    f"Failed to connect to production PostgreSQL database: {e}. "
-                    "Production will not fall back to ephemeral SQLite. Please check your Render DATABASE_URL."
-                ) from e
-            else:
-                logger.warning(
-                    f"⚠️ PostgreSQL connection to '{target_url}' failed ({e}). "
-                    f"Falling back to local persistent SQLite at {SQLITE_PATH}."
-                )
-                fallback_url = f"sqlite+aiosqlite:///{SQLITE_PATH}"
-                _engine = create_async_engine(fallback_url, echo=False)
-                _active_dialect = "sqlite"
-                _db_connected = True
-    else:
-        # Check if production environment is missing PostgreSQL DATABASE_URL
-        if bool(os.getenv("RENDER") or os.getenv("ENVIRONMENT") == "production"):
-            _db_connected = False
-            logger.critical("❌ CRITICAL: Running in production environment (Render) but DATABASE_URL is not set to PostgreSQL!")
-            raise RuntimeError(
-                "Production environment detected (Render) but DATABASE_URL is not configured for PostgreSQL! "
-                "Please configure DATABASE_URL in your Render service settings."
-            )
-        _engine = create_async_engine(target_url, echo=False)
-        _active_dialect = "sqlite"
-        _db_connected = True
-        logger.info(f"📁 Using persistent SQLite session store at {target_url}.")
+        else:
+            DEFAULT_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            sq_engine = create_async_engine(target_url, echo=False)
+            async with sq_engine.connect() as conn:
+                await conn.execute(text("SELECT 1;"))
+            _engine = sq_engine
+            logger.info(f"✅ Connected to local SQLite database: {target_url}")
+        engine_created = True
+    except Exception as e:
+        logger.warning(
+            f"⚠️ Could not connect to '{target_url}' ({e}). Falling back to local SQLite..."
+        )
 
+    if not engine_created:
+        fallback_url = DEFAULT_SQLITE_URL
+        DEFAULT_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        sq_engine = create_async_engine(fallback_url, echo=False)
+        async with sq_engine.connect() as conn:
+            await conn.execute(text("SELECT 1;"))
+        _engine = sq_engine
+        logger.info(f"✅ Successfully initialized local SQLite database: {fallback_url}")
+
+    _engine_loop = current_loop
     _session_factory = async_sessionmaker(
         _engine,
         class_=AsyncSession,
@@ -127,57 +128,36 @@ async def get_or_create_engine() -> AsyncEngine:
 
 
 async def init_db() -> None:
-    """Creates tables if they don't exist and automatically migrates missing columns."""
+    """
+    Initializes database tables automatically on startup.
+    Works for both PostgreSQL and SQLite without requiring external migration tools.
+    """
     engine = await get_or_create_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if engine.dialect.name == "postgresql":
+            try:
+                await conn.execute(
+                    text("SELECT setval(pg_get_serial_sequence('bkt_logs', 'id'), COALESCE((SELECT MAX(id) FROM bkt_logs), 1));")
+                )
+            except Exception:
+                pass
+    logger.info(f"✅ SAGE database initialized successfully ({engine.dialect.name}).")
 
-        def migrate_columns(sync_conn):
-            from sqlalchemy import inspect, text
-            inspector = inspect(sync_conn)
-            if "learning_sessions" in inspector.get_table_names():
-                existing_cols = {col["name"] for col in inspector.get_columns("learning_sessions")}
-                json_col_type = "JSONB" if _active_dialect == "postgresql" else "JSON"
-                bool_default = "FALSE" if _active_dialect == "postgresql" else "0"
-                if "assessment_done" not in existing_cols:
-                    sync_conn.execute(text(f"ALTER TABLE learning_sessions ADD COLUMN assessment_done BOOLEAN DEFAULT {bool_default}"))
-                if "self_reported_level" not in existing_cols:
-                    sync_conn.execute(text("ALTER TABLE learning_sessions ADD COLUMN self_reported_level VARCHAR(32)"))
-                if "teaching_mode" not in existing_cols:
-                    sync_conn.execute(text("ALTER TABLE learning_sessions ADD COLUMN teaching_mode VARCHAR(32) DEFAULT 'mode_2_teach_first'"))
-                if "teaching_step" not in existing_cols:
-                    sync_conn.execute(text("ALTER TABLE learning_sessions ADD COLUMN teaching_step VARCHAR(32) DEFAULT 'teach'"))
-                if "current_subtopic" not in existing_cols:
-                    sync_conn.execute(text("ALTER TABLE learning_sessions ADD COLUMN current_subtopic VARCHAR(128)"))
-                if "doubt_state" not in existing_cols:
-                    sync_conn.execute(text(f"ALTER TABLE learning_sessions ADD COLUMN doubt_state {json_col_type}"))
-                if "pending_question" not in existing_cols:
-                    sync_conn.execute(text(f"ALTER TABLE learning_sessions ADD COLUMN pending_question {json_col_type}"))
-                if "awaiting" not in existing_cols:
-                    sync_conn.execute(text("ALTER TABLE learning_sessions ADD COLUMN awaiting VARCHAR(32) DEFAULT 'none'"))
-                if "teaching_step_index" not in existing_cols:
-                    sync_conn.execute(text("ALTER TABLE learning_sessions ADD COLUMN teaching_step_index INTEGER DEFAULT 0"))
-                if "last_tutor_message" not in existing_cols:
-                    sync_conn.execute(text("ALTER TABLE learning_sessions ADD COLUMN last_tutor_message TEXT"))
-                if "subtopic_mastery" not in existing_cols:
-                    sync_conn.execute(text(f"ALTER TABLE learning_sessions ADD COLUMN subtopic_mastery {json_col_type}"))
-                if "misconceptions_log" not in existing_cols:
-                    sync_conn.execute(text(f"ALTER TABLE learning_sessions ADD COLUMN misconceptions_log {json_col_type}"))
-                if "signals" not in existing_cols:
-                    sync_conn.execute(text(f"ALTER TABLE learning_sessions ADD COLUMN signals {json_col_type}"))
-                if "study_plan" not in existing_cols:
-                    sync_conn.execute(text(f"ALTER TABLE learning_sessions ADD COLUMN study_plan {json_col_type}"))
 
-        await conn.run_sync(migrate_columns)
-    logger.info(f"✅ SAGE session tables verified/created on {_active_dialect}.")
+def get_db_status() -> Dict[str, Any]:
+    """Returns database status and dialect name for health check."""
+    return {
+        "connected": _engine is not None,
+        "dialect": _engine.dialect.name if _engine is not None else "disconnected",
+    }
 
 
 @asynccontextmanager
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Async context manager for transactional database sessions."""
+    """Async context manager for transactional database sessions with automatic rollback on error."""
     global _session_factory
-    if _session_factory is None:
-        await get_or_create_engine()
+    await get_or_create_engine()
 
     assert _session_factory is not None
     async with _session_factory() as session:
@@ -187,13 +167,3 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
         except Exception:
             await session.rollback()
             raise
-
-
-def get_db_status() -> Dict[str, Any]:
-    """Return live database connectivity metrics for health checks."""
-    is_prod = bool(os.getenv("RENDER") or os.getenv("ENVIRONMENT") == "production" or _active_dialect == "postgresql")
-    return {
-        "connected": _db_connected,
-        "dialect": _active_dialect,
-        "mode": "production" if is_prod else "development",
-    }

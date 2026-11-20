@@ -19,7 +19,7 @@ load_dotenv(find_dotenv())
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from multi_agent_tutor.app.schemas.intent import IntentClassification, IntentType
+from multi_agent_tutor.app.schemas.intent import IntentClassification
 from multi_agent_tutor.app.graph.state import TutorState
 
 

@@ -6,13 +6,11 @@ custom or arbitrary user-selected topics.
 """
 
 import json
-import os
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List
 from multi_agent_tutor.app.schemas.curriculum import (
     RichCurriculum,
     CurriculumConcept,
-    Curriculum,
 )
 
 

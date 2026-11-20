@@ -262,7 +262,9 @@ def handle_doubt_question(
     )
     is_help_request = (subintent == "help_request")
     is_clarity_negation = (subintent == "clarity_negation")
-    pq_text = pending_q.get("question", "None") if isinstance(pending_q, dict) else str(pending_q or "None")
+    raw_q = pending_q.get("question") if isinstance(pending_q, dict) else pending_q
+    has_active_question = bool(raw_q and str(raw_q).strip() not in ("None", "", "null"))
+    pq_text = str(raw_q).strip() if has_active_question else ""
 
     # 1. Check depth cap (C.3): 4th nested doubt gets saved to log and deferred
     if len(doubt_stack) >= DOUBT_STACK_MAX_DEPTH:
@@ -276,7 +278,7 @@ def handle_doubt_question(
         doubt_state["doubt_log"] = doubt_log
         cap_msg = (
             "We're exploring some great rabbit holes! But let's finish this one first, then we'll come back to that.\n\n"
-            f"I've saved your question for later so we won't forget it. Shall we get back to our current question?"
+            "I've saved your question for later so we won't forget it. Shall we get back to our current question?"
         )
         doubt_state["pending_clarity_check"] = True
         return {
@@ -344,13 +346,13 @@ def handle_doubt_question(
             })
             full_message = audit_res.pedagogical_message
         except Exception:
+            q_part = f"\n\n**Question:** {pq_text}" if has_active_question else ""
             full_message = (
                 f"You're completely right! My apologies—let's make sure we clearly cover this first.\n\n"
-                f"In {topic}, this concept builds on fundamental rules. Let's look at the question again:\n\n"
-                f"**Question:** {pq_text}"
+                f"In {topic}, this concept builds on fundamental rules.{q_part}"
             )
 
-        if pq_text and pq_text != "None" and pq_text not in full_message:
+        if has_active_question and pq_text not in full_message:
             full_message += f"\n\n**Question:** {pq_text}"
 
         doubt_log.append({
@@ -431,7 +433,7 @@ def handle_doubt_question(
             "rag_knowledge": rag_text,
         })
         explanation_body = response.content.strip()
-    except Exception as e:
+    except Exception:
         explanation_body = (
             f"Here is the key intuition: In {topic}, each step builds logically on the fundamental rules. "
             "Let's break it down simply."
@@ -459,12 +461,19 @@ def handle_doubt_question(
                 exp_ans = pending_q.get("expected_answer", "") if isinstance(pending_q, dict) else ""
                 hint_text = generate_safe_hint(topic, subtopic or topic, pq_text, exp_ans, explanation_body)
 
-                full_message = (
-                    f"No worries at all! Here's a small hint to point you in the right direction:\n\n"
-                    f"💡 {hint_text}\n\n"
-                    f"With that hint in mind, let's give the question another shot:\n\n"
-                    f"**Question:** {pq_text}"
-                )
+                if has_active_question:
+                    full_message = (
+                        f"No worries at all! Here's a small hint to point you in the right direction:\n\n"
+                        f"💡 {hint_text}\n\n"
+                        f"With that hint in mind, let's give the question another shot:\n\n"
+                        f"**Question:** {pq_text}"
+                    )
+                else:
+                    full_message = (
+                        f"No worries at all! Here's a small hint to point you in the right direction:\n\n"
+                        f"💡 {hint_text}\n\n"
+                        f"Take a moment to review this intuition. Does this make sense so far?"
+                    )
                 doubt_state["active_doubt_response"] = full_message
                 socratic_resp = SocraticResponse(
                     message=full_message,
@@ -640,35 +649,56 @@ def handle_doubt_question(
         asked_texts = list(state.get("asked_question_texts") or [])
 
         if curr_lvl == 1:
-            hint_text = generate_safe_hint(topic, subtopic or topic, pq_text, exp_ans, explanation_body)
-            full_message = (
-                f"No worries at all! Here's a small hint to point you in the right direction:\n\n"
-                f"💡 {hint_text}\n\n"
-                f"With that hint in mind, let's try the question again:\n\n**Question:** {pq_text}"
-            )
+            hint_text = generate_safe_hint(topic, subtopic or topic, pq_text or topic, exp_ans, explanation_body)
+            if has_active_question:
+                full_message = (
+                    f"No worries at all! Here's a small hint to point you in the right direction:\n\n"
+                    f"💡 {hint_text}\n\n"
+                    f"With that hint in mind, let's try the question again:\n\n**Question:** {pq_text}"
+                )
+            else:
+                full_message = (
+                    f"No worries at all! Here's a small hint to point you in the right direction:\n\n"
+                    f"💡 {hint_text}\n\n"
+                    f"Does this help clear things up, or would you like another example?"
+                )
             out_pq = dict(pending_q) if isinstance(pending_q, dict) else {"question": pq_text}
             out_pq["hint_given"] = True
-            next_awaiting = "answer"
+            next_awaiting = "answer" if has_active_question else "none"
         elif curr_lvl == 2:
-            hint_text = generate_guidance_hint(topic, subtopic or topic, pq_text, exp_ans, explanation_body)
-            full_message = (
-                f"Let's narrow down the focus:\n\n"
-                f"💡 {hint_text}\n\n"
-                f"Give it another shot:\n\n**Question:** {pq_text}"
-            )
+            hint_text = generate_guidance_hint(topic, subtopic or topic, pq_text or topic, exp_ans, explanation_body)
+            if has_active_question:
+                full_message = (
+                    f"Let's narrow down the focus:\n\n"
+                    f"💡 {hint_text}\n\n"
+                    f"Give it another shot:\n\n**Question:** {pq_text}"
+                )
+            else:
+                full_message = (
+                    f"Let's narrow down the focus:\n\n"
+                    f"💡 {hint_text}\n\n"
+                    f"How does this connect with what we've covered so far?"
+                )
             out_pq = dict(pending_q) if isinstance(pending_q, dict) else {"question": pq_text}
             out_pq["hint_given"] = True
-            next_awaiting = "answer"
+            next_awaiting = "answer" if has_active_question else "none"
         elif curr_lvl == 3:
-            hint_text = generate_worked_step_hint(topic, subtopic or topic, pq_text, exp_ans, explanation_body)
-            full_message = (
-                f"Let's walk through the initial step together:\n\n"
-                f"💡 {hint_text}\n\n"
-                f"Can you complete the next step?\n\n**Question:** {pq_text}"
-            )
+            hint_text = generate_worked_step_hint(topic, subtopic or topic, pq_text or topic, exp_ans, explanation_body)
+            if has_active_question:
+                full_message = (
+                    f"Let's walk through the initial step together:\n\n"
+                    f"💡 {hint_text}\n\n"
+                    f"Can you complete the next step?\n\n**Question:** {pq_text}"
+                )
+            else:
+                full_message = (
+                    f"Let's walk through the initial step together:\n\n"
+                    f"💡 {hint_text}\n\n"
+                    f"Would you like to try applying this now?"
+                )
             out_pq = dict(pending_q) if isinstance(pending_q, dict) else {"question": pq_text}
             out_pq["hint_given"] = True
-            next_awaiting = "answer"
+            next_awaiting = "answer" if has_active_question else "none"
         else:
             # Level 4: Full explanation, THEN swap to a DIFFERENT question on the same concept!
             teaching_info = state.get("teaching") or {}
@@ -692,11 +722,11 @@ def handle_doubt_question(
                 )
             else:
                 out_pq = dict(pending_q) if isinstance(pending_q, dict) else {"question": pq_text}
+                q_line = f"\n\n**Question:** {pq_text}" if has_active_question else "\n\nLet's continue whenever you feel ready."
                 full_message = (
-                    f"Here is the complete walkthrough:\n\n{explanation_body}\n\n"
-                    f"Let's try this question again:\n\n**Question:** {pq_text}"
+                    f"Here is the complete walkthrough:\n\n{explanation_body}{q_line}"
                 )
-            next_awaiting = "answer"
+            next_awaiting = "answer" if has_active_question else "none"
 
         doubt_state["doubt_stack"] = doubt_stack
         doubt_state["doubt_log"] = doubt_log
@@ -794,7 +824,7 @@ def handle_clarity_confirmation(state: TutorState) -> Dict[str, Any]:
     topic = state.get("target_topic", "General")
     subtopic = state.get("current_subtopic") or (resolved_checkpoint.get("subtopic") if resolved_checkpoint else None)
 
-    if q_text:
+    if q_text and str(q_text).strip() not in ("None", ""):
         if stored_attempt:
             bridge_msg = (
                 f"Awesome, glad that's clear! Earlier you mentioned: '{stored_attempt}'. "

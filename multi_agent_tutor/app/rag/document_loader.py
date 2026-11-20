@@ -1,8 +1,7 @@
 import os
-import sys
 import argparse
 from io import BytesIO
-from typing import List, Optional, Union
+from typing import Optional
 from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document

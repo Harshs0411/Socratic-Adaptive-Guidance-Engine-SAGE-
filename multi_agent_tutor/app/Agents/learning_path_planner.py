@@ -152,13 +152,11 @@ def calculate_priority(
     skipped_bonus = 0.10 if status == "skipped" else 0.0
 
     # ------------------------------------------------------
-    # Difficulty is used only as a small tie-breaker.
-    #
-    # We do NOT want the planner to simply choose the
-    # hardest concept.
+    # Difficulty is used only as a small tie-breaker favoring foundational/easier concepts first.
+    # We do NOT want the planner to simply choose the hardest concept.
     # ------------------------------------------------------
 
-    difficulty_bonus = min(
+    difficulty_modifier = min(
         concept.difficulty * 0.02,
         0.10,
     )
@@ -167,7 +165,7 @@ def calculate_priority(
         knowledge_gap
         + review_bonus
         + skipped_bonus
-        + difficulty_bonus
+        - difficulty_modifier
     )
 
 
@@ -283,7 +281,7 @@ def build_learning_path(
             skipped_concepts=skipped_concepts,
         )
 
-        if concept.concept_id in review_ids:
+        if concept.concept_id in review_ids and status != "skipped":
             status = "needs_review"
             reason = "Concept is in review queue for reinforcement before final completion."
 

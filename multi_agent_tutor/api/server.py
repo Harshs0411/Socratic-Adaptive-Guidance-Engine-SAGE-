@@ -222,8 +222,8 @@ def generate_mermaid_dag(curriculum: list, active_concept: Optional[str], master
     return "\n".join(lines)
 
 
-def format_curriculum_nodes(curriculum: list, active_concept: Optional[str], mastery_map: dict, skipped_topics: Optional[list] = None) -> list:
-    skipped_set = set(skipped_topics or [])
+def format_curriculum_nodes(curriculum: list, active_concept: Optional[str], mastery_map: dict, skipped_concepts: Optional[list] = None) -> list:
+    skipped_set = set(skipped_concepts or [])
 
     # Map children by parent_id
     children_by_parent: Dict[str, list] = {}
@@ -285,6 +285,35 @@ def format_curriculum_nodes(curriculum: list, active_concept: Optional[str], mas
             "status": status,
         })
     return nodes
+
+
+def calculate_overall_progress(curriculum: list, mastery_map: dict) -> float:
+    """
+    Computes overall learning progress percentage across curriculum concepts.
+    - Mastered concepts (status='mastered' or score >= 0.85) contribute 1.0 (100%).
+    - In-progress concepts contribute continuous credit for mastery earned above baseline (0.20 -> 0.85).
+    - Unstarted/pending concepts at baseline contribute 0.0.
+    """
+    if not curriculum:
+        return 0.0
+    leaves = [c for c in curriculum if not _get(c, "parent_id")]
+    target = leaves if leaves else curriculum
+    if not target:
+        return 0.0
+
+    total_earned = 0.0
+    for c in target:
+        cid = _get(c, "concept_id", "")
+        score = mastery_map.get(cid, 0.0)
+        c_status = _get(c, "status")
+        if c_status == "mastered" or score >= 0.85:
+            total_earned += 1.0
+        elif score > 0.20:
+            frac = max(0.0, min(1.0, (score - 0.20) / (0.85 - 0.20)))
+            total_earned += frac
+
+    pct = min(100.0, (total_earned / len(target)) * 100.0)
+    return round(pct, 1)
 
 
 def calculate_hake_gain(diag_assessments: dict, mastery_map: dict) -> dict:
@@ -379,9 +408,10 @@ async def start_session(req: StartSessionRequest):
                     "topic": existing_session.get("topic", topic),
                     "chat_history": chat_history,
                     "latest_message": chat_history[-1] if chat_history else None,
-                    "curriculum": format_curriculum_nodes(curriculum, active_concept, mastery_map, st.get("skipped_topics", [])),
+                    "curriculum": format_curriculum_nodes(curriculum, active_concept, mastery_map, st.get("skipped_concepts") or st.get("skipped_topics", [])),
                     "mermaid_dag": generate_mermaid_dag(curriculum, active_concept, mastery_map),
                     "mastery": mastery_map,
+                    "overall_progress": calculate_overall_progress(curriculum, mastery_map),
                     "active_concept": active_concept,
                     "depth_level": st.get("depth_level", depth),
                     "phase": phase,
@@ -542,9 +572,10 @@ async def start_session(req: StartSessionRequest):
             "topic": topic,
             "chat_history": chat_history,
             "latest_message": chat_history[0],
-            "curriculum": format_curriculum_nodes(curriculum, active_concept, mastery_map, state.get("skipped_topics", [])),
+            "curriculum": format_curriculum_nodes(curriculum, active_concept, mastery_map, state.get("skipped_concepts") or state.get("skipped_topics", [])),
             "mermaid_dag": generate_mermaid_dag(curriculum, active_concept, mastery_map),
             "mastery": mastery_map,
+            "overall_progress": calculate_overall_progress(curriculum, mastery_map),
             "active_concept": active_concept,
             "depth_level": state.get("depth_level", depth),
             "phase": "diagnostic" if not state.get("diagnostic_state", {}).get("completed") else "teaching",
@@ -841,9 +872,10 @@ async def _finalize_turn_payload(
         "chat_history": chat_history,
         "latest_message": asst_msg,
         "latency_seconds": round(total_elapsed, 3),
-        "curriculum": format_curriculum_nodes(curriculum, active_concept, mastery_map, updated_state.get("skipped_topics", [])),
+        "curriculum": format_curriculum_nodes(curriculum, active_concept, mastery_map, updated_state.get("skipped_concepts") or updated_state.get("skipped_topics", [])),
         "mermaid_dag": generate_mermaid_dag(curriculum, active_concept, mastery_map),
         "mastery": mastery_map,
+        "overall_progress": calculate_overall_progress(curriculum, mastery_map),
         "active_concept": active_concept,
         "phase": phase,
         "is_graduated": is_graduated,
@@ -1011,9 +1043,10 @@ async def get_session(session_id: str):
         "session_id": session_id,
         "topic": session.get("topic", "General"),
         "chat_history": session["chat_history"],
-        "curriculum": format_curriculum_nodes(curriculum, active_concept, mastery_map),
+        "curriculum": format_curriculum_nodes(curriculum, active_concept, mastery_map, state.get("skipped_concepts") or state.get("skipped_topics", [])),
         "mermaid_dag": generate_mermaid_dag(curriculum, active_concept, mastery_map),
         "mastery": mastery_map,
+        "overall_progress": calculate_overall_progress(curriculum, mastery_map),
         "active_concept": active_concept,
         "phase": phase,
         "is_graduated": is_graduated,
@@ -1051,8 +1084,8 @@ async def upload_document(
     filename = file.filename or "uploaded_notes.txt"
 
     try:
-        text = extract_text_from_bytes(file_bytes, filename)
-        count = ingest_text_content(text=text, topic=topic, source_name=filename)
+        text = await asyncio.to_thread(extract_text_from_bytes, file_bytes, filename)
+        count = await asyncio.to_thread(ingest_text_content, text=text, topic=topic, source_name=filename)
 
         # Track uploaded document in session state
         sess_state = dict(session.get("state") or {})
@@ -1088,8 +1121,10 @@ async def run_code(req: RunCodeRequest):
     """
     Sandboxed compilation and execution service for C++20 and Python 3.
     Enforces a strict 5.0s timeout and output limits.
+    Uses asyncio.to_thread to avoid blocking the async event loop during execution.
     """
-    return execute_code(
+    return await asyncio.to_thread(
+        execute_code,
         code=req.code,
         language=req.language,
         stdin_input=req.stdin_input or "",
@@ -1238,9 +1273,10 @@ async def drilldown_concept(req: DrilldownRequest):
     return {
         "success": True,
         "session_id": req.session_id,
-        "curriculum": format_curriculum_nodes(updated_curriculum, first_sub, mastery_map),
+        "curriculum": format_curriculum_nodes(updated_curriculum, first_sub, mastery_map, state.get("skipped_concepts") or state.get("skipped_topics", [])),
         "mermaid_dag": generate_mermaid_dag(updated_curriculum, first_sub, mastery_map),
         "mastery": mastery_map,
+        "overall_progress": calculate_overall_progress(updated_curriculum, mastery_map),
         "active_concept": first_sub,
         "sub_concepts_added": [sc.name for sc in valid_new_children],
         "latest_message": drill_msg,

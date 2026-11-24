@@ -51,6 +51,36 @@ def teaching_controller(
     Decide the next teaching action and pedagogical
     objective.
     """
+    # 0. Check for student META skip request (Requirement 3: Skip Handling)
+    if state.get("signals", {}).get("skip_requested"):
+        signals = dict(state.get("signals") or {})
+        signals.pop("skip_requested", None)
+        concept = state.get("current_concept")
+        skipped_concepts = list(state.get("skipped_concepts") or [])
+        if concept and concept not in skipped_concepts:
+            skipped_concepts.append(concept)
+
+        decision = TeachingDecision(
+            action="advance",
+            reason="Student requested to skip this concept. Marked status=skipped with mastery unchanged to be revisited before curriculum completion.",
+        )
+        teaching = state.get("teaching") or {
+            "attempt_count": 0,
+            "correct_checks": 0,
+            "has_transfer_correct": False,
+            "misconception_history": [],
+        }
+        return {
+            "teaching_decision": decision,
+            "signals": signals,
+            "skipped_concepts": skipped_concepts,
+            "teaching": {
+                **teaching,
+                "current_action": "advance",
+                "concept_completed": False,  # MUST NOT mark as completed/mastered
+                "concept_skipped": True,     # Flag for advancer to bypass completion check
+            },
+        }
 
     assessment = state.get(
         "teaching_assessment"
@@ -122,35 +152,6 @@ def teaching_controller(
         if pq.get("is_transfer") or pq.get("question_type") == "application":
             has_transfer_correct = True
 
-    # Check for student META skip request (Requirement 3: Skip Handling)
-    if state.get("signals", {}).get("skip_requested"):
-        signals = dict(state.get("signals") or {})
-        signals.pop("skip_requested", None)
-        concept = state.get("current_concept")
-        skipped_concepts = list(state.get("skipped_concepts") or [])
-        if concept and concept not in skipped_concepts:
-            skipped_concepts.append(concept)
-
-        decision = TeachingDecision(
-            action="advance",
-            reason="Student requested to skip this concept. Marked status=skipped with mastery unchanged to be revisited before curriculum completion.",
-        )
-        return {
-            "teaching_decision": decision,
-            "signals": signals,
-            "skipped_concepts": skipped_concepts,
-            "teaching": {
-                **teaching,
-                "current_action": "advance",
-                "attempt_count": attempt_count,
-                "correct_checks": correct_checks,
-                "has_transfer_correct": has_transfer_correct,
-                "misconception_history": misconceptions,
-                "current_objective": objective,
-                "concept_completed": False,  # MUST NOT mark as completed/mastered
-                "concept_skipped": True,     # Flag for advancer to bypass completion check
-            },
-        }
 
     # ==================================================
     # MASTERY & SUBTOPIC COMPLETION RULE (Requirement D)

@@ -42,6 +42,31 @@ def meta_agent_node(state: TutorState) -> Dict[str, Any]:
         signals["explanation_style"] = "alternative_analogy"
     elif subintent == "skip":
         signals["skip_requested"] = True
+        diag = state.get("diagnostic_state") or {}
+        if not diag.get("completed", False):
+            curr_q = diag.get("current_question_id")
+            if curr_q:
+                from multi_agent_tutor.app.schemas.assessment import AssessmentResult
+                diag_copy = dict(diag)
+                assessments = dict(diag_copy.get("assessments") or {})
+                answers = dict(diag_copy.get("answers") or {})
+                answers[curr_q] = "[skipped]"
+                assessments[curr_q] = AssessmentResult(
+                    correctness="incorrect",
+                    score=0.0,
+                    confidence=1.0,
+                    evidence_of_understanding=[],
+                    misconceptions=[],
+                    feedback="The student chose to skip this diagnostic check.",
+                )
+                diag_copy["assessments"] = assessments
+                diag_copy["answers"] = answers
+                return {
+                    "tutor_response": "Skipping this diagnostic question.",
+                    "signals": signals,
+                    "diagnostic_state": diag_copy,
+                    "student_input": None,
+                }
 
     if subintent == "slow_down":
         msg = (

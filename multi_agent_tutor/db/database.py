@@ -98,7 +98,11 @@ async def get_or_create_engine() -> AsyncEngine:
             logger.info("✅ Connected to PostgreSQL database successfully.")
         else:
             DEFAULT_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            sq_engine = create_async_engine(target_url, echo=False)
+            sq_engine = create_async_engine(
+                target_url,
+                echo=False,
+                connect_args={"timeout": 30.0},
+            )
             async with sq_engine.connect() as conn:
                 await conn.execute(text("SELECT 1;"))
             _engine = sq_engine
@@ -112,7 +116,11 @@ async def get_or_create_engine() -> AsyncEngine:
     if not engine_created:
         fallback_url = DEFAULT_SQLITE_URL
         DEFAULT_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        sq_engine = create_async_engine(fallback_url, echo=False)
+        sq_engine = create_async_engine(
+            fallback_url,
+            echo=False,
+            connect_args={"timeout": 30.0},
+        )
         async with sq_engine.connect() as conn:
             await conn.execute(text("SELECT 1;"))
         _engine = sq_engine
@@ -134,6 +142,9 @@ async def init_db() -> None:
     """
     engine = await get_or_create_engine()
     async with engine.begin() as conn:
+        if engine.dialect.name == "sqlite":
+            await conn.execute(text("PRAGMA journal_mode=WAL;"))
+            await conn.execute(text("PRAGMA busy_timeout=30000;"))
         await conn.run_sync(Base.metadata.create_all)
         if engine.dialect.name == "postgresql":
             try:

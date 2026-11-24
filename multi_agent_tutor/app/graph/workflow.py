@@ -101,6 +101,24 @@ def route_after_intent(state: TutorState) -> str:
     return "doubt_agent"
 
 
+def route_after_meta(state: TutorState) -> str:
+    """
+    After meta agent processing:
+    If a skip was requested:
+    - In diagnostic: route to advance_diagnostic to advance to next question
+    - In teaching: route to controller to trigger advance_concept -> sage
+    Otherwise, terminate turn and present meta response (END).
+    """
+    signals = state.get("signals") or {}
+    if signals.get("skip_requested"):
+        diag = state.get("diagnostic_state") or {}
+        if not diag.get("completed", False):
+            return "advance_diagnostic"
+        if state.get("current_concept"):
+            return "controller"
+    return END
+
+
 def route_after_advance_diag(state: TutorState) -> str:
     """
     After advancing diagnostic questions:
@@ -225,7 +243,15 @@ def build_master_graph() -> StateGraph:
         },
     )
     builder.add_edge("doubt_agent", END)
-    builder.add_edge("meta_agent", END)
+    builder.add_conditional_edges(
+        "meta_agent",
+        route_after_meta,
+        {
+            "controller": "controller",
+            "advance_diagnostic": "advance_diagnostic",
+            END: END,
+        },
+    )
     builder.add_edge("chitchat_agent", END)
 
     # ------------------------------------------------------------------

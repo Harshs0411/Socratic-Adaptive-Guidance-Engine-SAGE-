@@ -5,7 +5,15 @@ import { AlertCircle, X } from "lucide-react";
 import "./App.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000/api";
-const DEFAULT_STUDENT_ID = "student_001";
+
+function getOrCreateStudentId() {
+  let id = localStorage.getItem("sage_student_id");
+  if (!id) {
+    id = "student_" + Math.random().toString(36).substring(2, 10);
+    localStorage.setItem("sage_student_id", id);
+  }
+  return id;
+}
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -17,7 +25,8 @@ export default function App() {
   // Load previous sessions for student from backend
   const fetchPastSessions = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/sessions/student/${DEFAULT_STUDENT_ID}`);
+      const studentId = getOrCreateStudentId();
+      const res = await fetch(`${API_BASE}/sessions/student/${studentId}`);
       if (res.ok) {
         const data = await res.json();
         setPastSessions(data.sessions || []);
@@ -58,7 +67,7 @@ export default function App() {
     try {
       const payload = {
         topic,
-        student_id: DEFAULT_STUDENT_ID,
+        student_id: getOrCreateStudentId(),
         depth_level: depthLevel,
         start_fresh: Boolean(startFresh),
       };
@@ -156,6 +165,32 @@ export default function App() {
         let buffer = "";
         const streamMsgId = "asst-stream-" + Date.now();
         let accumulatedContent = "";
+        let lastRenderTime = 0;
+        const RENDER_THROTTLE_MS = 50;
+
+        const flushStreamingUi = (force = false) => {
+          const now = performance.now();
+          if (force || now - lastRenderTime >= RENDER_THROTTLE_MS) {
+            lastRenderTime = now;
+            setSession((prev) => {
+              if (!prev) return prev;
+              const history = [...prev.chat_history];
+              const existingIdx = history.findIndex((m) => m.id === streamMsgId);
+              const streamMsg = {
+                id: streamMsgId,
+                role: "assistant",
+                content: accumulatedContent,
+                isStreaming: true,
+              };
+              if (existingIdx >= 0) {
+                history[existingIdx] = streamMsg;
+              } else {
+                history.push(streamMsg);
+              }
+              return { ...prev, chat_history: history };
+            });
+          }
+        };
 
         while (true) {
           const { done, value } = await reader.read();
@@ -185,28 +220,14 @@ export default function App() {
                 const parsed = JSON.parse(eventData);
                 const delta = parsed.delta !== undefined ? parsed.delta : (parsed.token !== undefined ? parsed.token : "");
                 accumulatedContent += delta;
-
-                setSession((prev) => {
-                  const history = [...prev.chat_history];
-                  const existingIdx = history.findIndex((m) => m.id === streamMsgId);
-                  const streamMsg = {
-                    id: streamMsgId,
-                    role: "assistant",
-                    content: accumulatedContent,
-                    isStreaming: true,
-                  };
-                  if (existingIdx >= 0) {
-                    history[existingIdx] = streamMsg;
-                  } else {
-                    history.push(streamMsg);
-                  }
-                  return { ...prev, chat_history: history };
-                });
+                flushStreamingUi(false);
               } catch (e) {
                 // If data was raw string instead of json
                 accumulatedContent += eventData;
+                flushStreamingUi(false);
               }
             } else if (eventType === "done") {
+              flushStreamingUi(true);
               try {
                 const finalData = JSON.parse(eventData);
                 setSession((prev) => ({
@@ -219,6 +240,7 @@ export default function App() {
                   phase: finalData.phase,
                   is_graduated: finalData.is_graduated,
                   hake_gain: finalData.hake_gain,
+                  overall_progress: finalData.overall_progress ?? prev.overall_progress,
                   teaching_mode: finalData.teaching_mode ?? prev.teaching_mode,
                   doubts_asked: finalData.doubts_asked ?? prev.doubts_asked,
                   visuals: finalData.visuals ?? prev.visuals,
@@ -250,6 +272,7 @@ export default function App() {
           phase: data.phase,
           is_graduated: data.is_graduated,
           hake_gain: data.hake_gain,
+          overall_progress: data.overall_progress ?? prev.overall_progress,
           teaching_mode: data.teaching_mode ?? prev.teaching_mode,
           doubts_asked: data.doubts_asked ?? prev.doubts_asked,
           visuals: data.visuals ?? prev.visuals,
@@ -308,6 +331,7 @@ export default function App() {
         curriculum: data.curriculum,
         mermaid_dag: data.mermaid_dag,
         mastery: data.mastery,
+        overall_progress: data.overall_progress ?? prev.overall_progress,
         active_concept: data.active_concept,
         chat_history: data.chat_history || prev.chat_history,
       }));

@@ -29,9 +29,9 @@ def advance_concept(state: TutorState):
     transitions = list(state.get("concept_transitions") or [])
     import time
 
-    # If moving on without meeting completion criteria, add to review_queue (Fix G)
-    if not is_completed:
-        reason = "skipped" if is_skipped else (
+    # If moving on without meeting completion criteria and not skipped, add to review_queue (Fix G)
+    if not is_completed and not is_skipped:
+        reason = (
             "attempt_cap_reached" if teaching.get("attempt_count", 0) >= 3 else "incomplete_mastery"
         )
         if not any((item.get("concept_id") if isinstance(item, dict) else item) == current_concept for item in review_queue):
@@ -115,6 +115,7 @@ def advance_concept(state: TutorState):
             "current_objective": None,
             "concept_completed": False,
             "just_advanced_from": current_concept,
+            "was_skipped": is_skipped,
         },
         "teaching_assessment": state.get("teaching_assessment"),
         "teaching_decision": None,

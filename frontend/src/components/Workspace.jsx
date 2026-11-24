@@ -8,6 +8,7 @@ import confetti from "canvas-confetti";
 import MermaidDAG from "./MermaidDAG";
 import ErrorBoundary from "./ErrorBoundary";
 import { marked } from "marked";
+import DOMPurify from "dompurify";
 
 marked.setOptions({
   gfm: true,
@@ -43,12 +44,13 @@ function FormattedMessageContent({ content }) {
         if (p.type === "mermaid") {
           return <MermaidDAG key={idx} chart={p.chart} title="📊 Concept Visual Model" />;
         }
-        const html = marked.parse(p.text || "");
+        const rawHtml = marked.parse(p.text || "");
+        const cleanHtml = DOMPurify.sanitize(rawHtml);
         return (
           <div
             key={idx}
             className="markdown-body"
-            dangerouslySetInnerHTML={{ __html: html }}
+            dangerouslySetInnerHTML={{ __html: cleanHtml }}
           />
         );
       })}
@@ -80,6 +82,7 @@ export default function Workspace({
   const { 
     session_id, topic, chat_history = [], curriculum = [], 
     mermaid_dag, mastery, active_concept, phase, is_graduated, hake_gain,
+    overall_progress,
     teaching_mode = "mode_2_teach_first", doubts_asked = 0, visuals = [], review_queue = []
   } = sessionData;
 
@@ -179,9 +182,26 @@ export default function Workspace({
   const isAwaitingContinue = lastAsstMsg?.awaiting === "continue" || (!lastAsstMsg?.question && (lastMsgText.includes("click continue") || lastMsgText.includes("click **continue**")));
   const isAwaitingClarity = lastAsstMsg?.awaiting === "clarity_check" || lastMsgText.includes("does that make sense");
 
-  const masteredCount = (curriculum || []).filter(c => c.status === "mastered" || (c.score || 0) >= 0.85).length;
-  const totalConcepts = (curriculum || []).length || 1;
-  const overallProgressPct = Math.round((masteredCount / totalConcepts) * 100);
+  // Continuous learning progress calculation:
+  // - Mastered concepts (status="mastered" or score >= 0.85) contribute 1.0
+  // - Concepts with earned mastery above baseline (0.20) contribute (score - 0.20) / (0.85 - 0.20)
+  // - Untouched/pending concepts contribute 0.0
+  const leafOrTopConcepts = (curriculum || []).filter(c => !c.parent_id);
+  const targetConcepts = leafOrTopConcepts.length > 0 ? leafOrTopConcepts : (curriculum || []);
+  const totalConcepts = targetConcepts.length || 1;
+
+  const totalEarned = targetConcepts.reduce((acc, c) => {
+    const score = c.score || 0;
+    if (c.status === "mastered" || score >= 0.85) return acc + 1.0;
+    if (score > 0.20) {
+      const frac = Math.max(0, Math.min(1.0, (score - 0.20) / (0.85 - 0.20)));
+      return acc + frac;
+    }
+    return acc;
+  }, 0);
+
+  const calculatedProgressPct = Math.min(100, Math.round((totalEarned / totalConcepts) * 100));
+  const overallProgressPct = typeof overall_progress === "number" ? Math.round(overall_progress) : calculatedProgressPct;
 
   return (
     <div className="sage-app-container">

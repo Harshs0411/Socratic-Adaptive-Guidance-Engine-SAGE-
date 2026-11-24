@@ -47,9 +47,9 @@ SUBTOPIC_REQUIRE_TRANSFER: bool = True
 # =====================================================================
 # Default BKT parameters (Single Source of Truth)
 DEFAULT_P_L0: float = 0.20       # Default prior mastery for unassessed topics
-DEFAULT_P_TRANSIT: float = 0.07  # Transition (learning rate) during instruction (tuned for 4-6 checks)
-DEFAULT_P_GUESS: float = 0.25    # Default guess probability
-DEFAULT_P_SLIP: float = 0.10     # Default slip probability
+DEFAULT_P_TRANSIT: float = 0.18  # Transition (learning rate) during instruction (responsive momentum)
+DEFAULT_P_GUESS: float = 0.15    # Default guess probability (low for open-ended Socratic questions)
+DEFAULT_P_SLIP: float = 0.18     # Default slip probability (acknowledges conversational variation without excessive penalty)
 
 # Forgetting decay parameter lambda (applied only between sessions or at session start)
 # Decay model: P(L_t) = max(RETENTION_FLOOR, P(L_0) + (P(L_{t-1}) - RETENTION_FLOOR) * exp(-lambda * delta_days))

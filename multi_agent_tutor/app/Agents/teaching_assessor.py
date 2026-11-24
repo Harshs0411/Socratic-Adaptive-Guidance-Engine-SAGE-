@@ -362,13 +362,15 @@ def assess_teaching_response(
 
     # Fast-path for explicit 'don't know' / unknowledgeable responses
     from multi_agent_tutor.app.Agents.assessment import is_dont_know_response
+    from multi_agent_tutor.app.config import DONT_KNOW_EVIDENCE_FLOOR
     if is_dont_know_response(student_answer):
         result = TeachingAssessment(
             understanding="incorrect",
-            score=0.0,
-            confidence=1.0,
-            reasoning_quality="weak",
-            misconceptions=["No prior knowledge demonstrated"],
+            score=DONT_KNOW_EVIDENCE_FLOOR,
+            confidence=0.85,
+            reasoning_quality="Student expressed uncertainty / requested guidance.",
+            misconceptions=[],
+            feedback="The student indicated they are unsure and would like guided scaffolding.",
         )
         return {
             "teaching_assessment": result,

@@ -378,10 +378,21 @@ def sage_agent(state: TutorState):
         if just_advanced_from and just_advanced_from != concept:
             adv_prev_title = just_advanced_from.replace("_", " ").title()
             adv_curr_title = concept.replace("_", " ").title()
-            advancement_banner = (
-                f"🌟 **Mastery Achieved:** Excellent job mastering **{adv_prev_title}**!\n\n"
-                f"Now, building directly on the concepts you just learned, let's explore our next milestone: **{adv_curr_title}**.\n\n"
+            is_prev_skipped = (
+                teaching.get("was_skipped")
+                or teaching.get("concept_skipped")
+                or (just_advanced_from in (state.get("skipped_concepts") or []))
             )
+            if is_prev_skipped:
+                advancement_banner = (
+                    f"⏭️ **Concept Skipped:** Moving past **{adv_prev_title}** for now. We will revisit it before curriculum completion.\n\n"
+                    f"Now, let's explore our next milestone: **{adv_curr_title}**.\n\n"
+                )
+            else:
+                advancement_banner = (
+                    f"🌟 **Mastery Achieved:** Excellent job mastering **{adv_prev_title}**!\n\n"
+                    f"Now, building directly on the concepts you just learned, let's explore our next milestone: **{adv_curr_title}**.\n\n"
+                )
 
         is_prereq_offer = (action == "prerequisite_offer" or teaching.get("current_action") == "prerequisite_offer")
         if is_prereq_offer:

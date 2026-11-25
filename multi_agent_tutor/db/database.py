@@ -139,20 +139,63 @@ async def init_db() -> None:
     """
     Initializes database tables automatically on startup.
     Works for both PostgreSQL and SQLite without requiring external migration tools.
+    Includes idempotent schema synchronization to add missing columns to existing tables.
     """
     engine = await get_or_create_engine()
     async with engine.begin() as conn:
         if engine.dialect.name == "sqlite":
             await conn.execute(text("PRAGMA journal_mode=WAL;"))
             await conn.execute(text("PRAGMA busy_timeout=30000;"))
+
         await conn.run_sync(Base.metadata.create_all)
+
         if engine.dialect.name == "postgresql":
+            # Idempotently add any columns added to models after initial table creation
+            pg_column_patches = [
+                "ALTER TABLE learning_sessions ADD COLUMN IF NOT EXISTS curriculum_id VARCHAR(64);",
+                "ALTER TABLE learning_sessions ADD COLUMN IF NOT EXISTS version_id INTEGER DEFAULT 1;",
+                "ALTER TABLE learning_sessions ADD COLUMN IF NOT EXISTS current_subtopic VARCHAR(128);",
+                "ALTER TABLE learning_sessions ADD COLUMN IF NOT EXISTS self_reported_level VARCHAR(32);",
+                "ALTER TABLE learning_sessions ADD COLUMN IF NOT EXISTS teaching_mode VARCHAR(32) DEFAULT 'mode_2_teach_first';",
+                "ALTER TABLE learning_sessions ADD COLUMN IF NOT EXISTS teaching_step VARCHAR(32) DEFAULT 'teach';",
+                "ALTER TABLE learning_sessions ADD COLUMN IF NOT EXISTS teaching_step_index INTEGER DEFAULT 0;",
+                "ALTER TABLE learning_sessions ADD COLUMN IF NOT EXISTS awaiting VARCHAR(32) DEFAULT 'none';",
+                "ALTER TABLE learning_sessions ADD COLUMN IF NOT EXISTS last_tutor_message TEXT;",
+                "ALTER TABLE learning_sessions ADD COLUMN IF NOT EXISTS assessment_done BOOLEAN DEFAULT FALSE;",
+                "ALTER TABLE learning_sessions ADD COLUMN IF NOT EXISTS hake_gain FLOAT;",
+                "CREATE INDEX IF NOT EXISTS idx_learning_sessions_curriculum_id ON learning_sessions(curriculum_id);",
+                "CREATE INDEX IF NOT EXISTS idx_learning_sessions_student_updated ON learning_sessions(student_id, updated_at);",
+                "CREATE INDEX IF NOT EXISTS idx_learning_sessions_topic_active ON learning_sessions(topic, is_graduated);",
+                "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS metadata_info JSONB;",
+                "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS rag_citations JSONB;",
+                "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS question TEXT;",
+                "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS action VARCHAR(32);",
+            ]
+            for stmt in pg_column_patches:
+                try:
+                    await conn.execute(text(stmt))
+                except Exception as patch_err:
+                    logger.warning(f"Database schema patch warning: {patch_err}")
+
             try:
                 await conn.execute(
                     text("SELECT setval(pg_get_serial_sequence('bkt_logs', 'id'), COALESCE((SELECT MAX(id) FROM bkt_logs), 1));")
                 )
             except Exception:
                 pass
+
+        elif engine.dialect.name == "sqlite":
+            try:
+                res = await conn.execute(text("PRAGMA table_info(learning_sessions);"))
+                existing_cols = {row[1] for row in res.fetchall()}
+                if existing_cols:
+                    if "curriculum_id" not in existing_cols:
+                        await conn.execute(text("ALTER TABLE learning_sessions ADD COLUMN curriculum_id VARCHAR(64);"))
+                    if "version_id" not in existing_cols:
+                        await conn.execute(text("ALTER TABLE learning_sessions ADD COLUMN version_id INTEGER DEFAULT 1;"))
+            except Exception as patch_err:
+                logger.warning(f"SQLite schema patch warning: {patch_err}")
+
     logger.info(f"✅ SAGE database initialized successfully ({engine.dialect.name}).")
 
 
